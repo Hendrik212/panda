@@ -1,6 +1,6 @@
 [project]
 name = "openpilot"
-requires-python = ">= 3.11, < 3.13"
+requires-python = ">= 3.12.3, < 3.13"
 license = {text = "MIT License"}
 version = "0.1.0"
 description = "an open source driver assistance system"
@@ -17,9 +17,6 @@ dependencies = [
   "crcmod-plus",  # cars + qcomgpsd
   "tqdm",         # cars (fw_versions.py) on start + many one-off uses
 
-  # hardwared
-  "smbus2", # configuring amp
-
   # core
   "cffi",
   "scons",
@@ -35,9 +32,6 @@ dependencies = [
   # with the latest release
   "pyopenssl < 24.3.0",
   "pyaudio",
-
-  # ubloxd (TODO: just use struct)
-  "kaitaistruct",
 
   # panda
   "libusb1",
@@ -80,7 +74,6 @@ dependencies = [
 [project.optional-dependencies]
 docs = [
   "Jinja2",
-  "natsort",
   "mkdocs",
 ]
 
