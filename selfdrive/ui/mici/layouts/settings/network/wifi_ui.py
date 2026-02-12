@@ -318,7 +318,7 @@ class WifiUIMici(BigMultiOptionDialog):
   INACTIVITY_TIMEOUT = 1
 
   def __init__(self, wifi_manager: WifiManager, back_callback: Callable):
-    super().__init__([], None, None, right_btn_callback=None)
+    super().__init__([], None)
 
     # Set up back navigation
     self.set_back_callback(back_callback)
@@ -425,7 +425,7 @@ class WifiUIMici(BigMultiOptionDialog):
       self._on_need_auth(network.ssid, False)
 
   def _on_need_auth(self, ssid, incorrect_password=True):
-    hint = "incorrect password..." if incorrect_password else "enter password..."
+    hint = "wrong password..." if incorrect_password else "enter password..."
     dlg = BigInputDialog(hint, "", minimum_length=8,
                          confirm_callback=lambda _password: self._connect_with_password(ssid, _password))
     # go back to the manage network page
