@@ -25,6 +25,41 @@ function agnos_init {
     fi
     $DIR/system/hardware/tici/updater $AGNOS_PY $MANIFEST
   fi
+
+  # Setup BLE for ABRP bridge (runs once after BT kernel is installed)
+  setup_abrp_ble
+}
+
+function setup_abrp_ble {
+  # Skip if already setup or BT not available in kernel
+  if [ -f /data/.abrp_ble_setup_done ] || [ ! -d /sys/class/bluetooth ]; then
+    return
+  fi
+
+  echo "Setting up ABRP BLE bridge dependencies..."
+
+  # Install BlueZ if not present
+  if ! command -v bluetoothctl &> /dev/null; then
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq bluez
+  fi
+
+  # Install bless Python library for BLE GATT server
+  pip install --quiet bless
+
+  # Enable and start Bluetooth service
+  sudo systemctl enable bluetooth
+  sudo systemctl start bluetooth
+
+  # Copy WCN3990 firmware if bundled (kernel needs these)
+  if [ -d "$DIR/system/abrp_ble/firmware" ]; then
+    sudo mkdir -p /lib/firmware/updates/qca
+    sudo cp -n "$DIR/system/abrp_ble/firmware/"* /lib/firmware/updates/qca/ 2>/dev/null || true
+  fi
+
+  # Mark setup complete
+  touch /data/.abrp_ble_setup_done
+  echo "ABRP BLE setup complete"
 }
 
 function launch {
