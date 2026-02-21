@@ -56,9 +56,9 @@
   },
   {
     "name": "boot",
-    "url": "https://github.com/Hendrik212/openpilot/releases/download/agnos-bt-v16-deee84f/boot.img.xz",
-    "hash": "58a4c723bb130735edb1f6ac00c26bc8c03ba4ec4818630b99344c45c754c7e9",
-    "hash_raw": "79a24c419bca073237070e1a2f738a4dbf3b74e8fc92cf0573d5445e92cbaf9f",
+    "url": "https://github.com/Hendrik212/openpilot/releases/download/agnos-bt-v16-0b53205/boot.img.xz",
+    "hash": "ecf02daa08141a4329acedae31282589abdfa77059daab612669ac8a6a01a92f",
+    "hash_raw": "85690d72c5fb4d02a98286cda0aea99be2f1540e5e6c1f98e0e8a006a5152f5d",
     "size": 17750016,
     "sparse": false,
     "full_check": true,
