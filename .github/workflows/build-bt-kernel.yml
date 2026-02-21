@@ -1,0 +1,120 @@
+name: Build BT Kernel
+
+on:
+  push:
+    branches:
+      - isla-master
+    paths:
+      - 'system/hardware/tici/agnos.json'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout openpilot with agnos-builder submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Checkout agnos-builder (no kernel submodule yet)
+        run: |
+          git submodule update --init --depth 1 agnos-builder
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: agnos-builder/.ccache
+          key: agnos-bt-kernel-ccache-${{ github.sha }}
+          restore-keys: |
+            agnos-bt-kernel-ccache-
+
+      - name: Build BT kernel
+        run: |
+          cd agnos-builder
+          chmod +x build_kernel.sh
+          ./build_kernel.sh
+
+      - name: Compute hashes and compress
+        id: hashes
+        run: |
+          BOOT_IMG=agnos-builder/output/boot.img
+
+          HASH_RAW=$(sha256sum "$BOOT_IMG" | awk '{print $1}')
+          SIZE=$(stat -c%s "$BOOT_IMG")
+
+          xz -k -9 "$BOOT_IMG"
+          HASH_XZ=$(sha256sum "${BOOT_IMG}.xz" | awk '{print $1}')
+
+          AGNOS_VERSION=$(cat agnos-builder/VERSION)
+          SHORT_SHA=${GITHUB_SHA::7}
+          TAG="agnos-bt-v${AGNOS_VERSION}-${SHORT_SHA}"
+
+          echo "hash_raw=$HASH_RAW" >> $GITHUB_OUTPUT
+          echo "hash_xz=$HASH_XZ"   >> $GITHUB_OUTPUT
+          echo "size=$SIZE"          >> $GITHUB_OUTPUT
+          echo "tag=$TAG"            >> $GITHUB_OUTPUT
+          echo "agnos_version=$AGNOS_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release and upload boot.img.xz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ steps.hashes.outputs.tag }}
+          gh release create "$TAG" \
+            --title "AGNOS BT Kernel $TAG" \
+            --notes "Custom Agnos kernel with Bluetooth (WCN3990) enabled for ABRP OBD BLE bridge." \
+            agnos-builder/output/boot.img.xz
+
+      - name: Update agnos.json boot entry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ steps.hashes.outputs.tag }}
+          HASH_RAW=${{ steps.hashes.outputs.hash_raw }}
+          HASH_XZ=${{ steps.hashes.outputs.hash_xz }}
+          SIZE=${{ steps.hashes.outputs.size }}
+          REPO=${{ github.repository }}
+
+          URL="https://github.com/${REPO}/releases/download/${TAG}/boot.img.xz"
+
+          python3 - <<EOF
+          import json
+
+          with open("system/hardware/tici/agnos.json") as f:
+              manifest = json.load(f)
+
+          for partition in manifest:
+              if partition["name"] == "boot":
+                  partition["url"] = "$URL"
+                  partition["hash"] = "$HASH_XZ"
+                  partition["hash_raw"] = "$HASH_RAW"
+                  partition["size"] = $SIZE
+                  partition["sparse"] = False
+                  partition["full_check"] = True
+                  partition["has_ab"] = True
+                  # remove casync fields if present
+                  partition.pop("casync_caibx", None)
+                  partition.pop("casync_store", None)
+                  break
+
+          with open("system/hardware/tici/agnos.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          EOF
+
+      - name: Commit updated agnos.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add system/hardware/tici/agnos.json
+          git commit -m "agnos.json: update boot to BT kernel ${{ steps.hashes.outputs.tag }}"
+          git push origin isla-master

@@ -16,3 +16,6 @@
 [submodule "opendbc_repo"]
 	path = opendbc_repo
 	url = https://github.com/Hendrik212/opendbc.git
+[submodule "agnos-builder"]
+	path = agnos-builder
+	url = https://github.com/Hendrik212/agnos-builder.git
