@@ -116,7 +116,10 @@ procs = [
 
   # MQTT
   PythonProcess("mqttd", "system.mqttd.mqttd", only_offroad),
-  PythonProcess("mqttd_status", "system.mqttd.status", only_offroad)
+  PythonProcess("mqttd_status", "system.mqttd.status", only_offroad),
+
+  # ABRP OBD BLE bridge (always on for live data to ABRP)
+  PythonProcess("abrp_ble", "system.abrp_ble.abrp_ble", always_run),
 ]
 
 managed_processes = {p.name: p for p in procs}
