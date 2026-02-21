@@ -31,35 +31,18 @@ function agnos_init {
 }
 
 function setup_abrp_ble {
-  # Skip if already setup or BT not available in kernel
-  if [ -f /data/.abrp_ble_setup_done ] || [ ! -d /sys/class/bluetooth ]; then
-    return
+  # Bring up WCN3990 BT chip via UART (ttyHS0 = SE6 UART at 0x898000)
+  # 'any' protocol skips ROME firmware loading - chip works without rampatch
+  if [ -c /dev/ttyHS0 ] && ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
+    echo "Starting WCN3990 Bluetooth via hciattach..."
+    sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
+    sleep 3
   fi
 
-  echo "Setting up ABRP BLE bridge dependencies..."
-
-  # Install BlueZ if not present
-  if ! command -v bluetoothctl &> /dev/null; then
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq bluez
+  # Install bless Python library for BLE GATT server (once)
+  if ! python3 -c "import bless" 2>/dev/null; then
+    pip install --quiet bless
   fi
-
-  # Install bless Python library for BLE GATT server
-  pip install --quiet bless
-
-  # Enable and start Bluetooth service
-  sudo systemctl enable bluetooth
-  sudo systemctl start bluetooth
-
-  # Copy WCN3990 firmware if bundled (kernel needs these)
-  if [ -d "$DIR/system/abrp_ble/firmware" ]; then
-    sudo mkdir -p /lib/firmware/updates/qca
-    sudo cp -n "$DIR/system/abrp_ble/firmware/"* /lib/firmware/updates/qca/ 2>/dev/null || true
-  fi
-
-  # Mark setup complete
-  touch /data/.abrp_ble_setup_done
-  echo "ABRP BLE setup complete"
 }
 
 function launch {
