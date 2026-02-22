@@ -32,6 +32,10 @@ try:
     BLE_AVAILABLE = True
 except ImportError:
     BLE_AVAILABLE = False
+    BlessServer = None
+    BlessGATTCharacteristic = object
+    GATTCharacteristicProperties = None
+    GATTAttributePermissions = None
     print("[ABRP-BLE] bless library not installed, BLE disabled")
 
 # Cereal imports
