@@ -16,10 +16,22 @@ function agnos_init {
   sudo chgrp gpu /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
   sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
 
-  # Check if AGNOS update is required
+  # Check if AGNOS update is required.
+  # Version mismatches and manifest verify failures (e.g. boot hash mismatch)
+  # both require running updater.
+  AGNOS_PY="$DIR/system/hardware/tici/agnos.py"
+  MANIFEST="$DIR/system/hardware/tici/agnos.json"
+  NEED_AGNOS_UPDATE=0
+
   if [ $(< /VERSION) != "$AGNOS_VERSION" ]; then
-    AGNOS_PY="$DIR/system/hardware/tici/agnos.py"
-    MANIFEST="$DIR/system/hardware/tici/agnos.json"
+    NEED_AGNOS_UPDATE=1
+  fi
+
+  if ! $AGNOS_PY --verify $MANIFEST; then
+    NEED_AGNOS_UPDATE=1
+  fi
+
+  if [ "$NEED_AGNOS_UPDATE" -eq 1 ]; then
     if $AGNOS_PY --verify $MANIFEST; then
       sudo reboot
     fi
