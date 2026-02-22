@@ -37,9 +37,12 @@ function setup_abrp_ble {
     echo "Starting WCN3990 Bluetooth via hciattach..."
     # Stop bluetoothd so it doesn't conflict with hciattach (bluez 5.x claims hci0)
     sudo systemctl stop bluetooth 2>/dev/null || true
+    sleep 1
     sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
     sleep 3
+    # Bring up BEFORE restarting bluetoothd so it inherits an UP adapter
     sudo hciconfig hci0 up 2>/dev/null || true
+    sudo systemctl start bluetooth 2>/dev/null || true
   fi
 
   # Install bless Python library for BLE GATT server (once, to /data since /usr is read-only)
