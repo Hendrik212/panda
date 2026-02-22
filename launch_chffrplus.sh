@@ -71,9 +71,8 @@ function setup_abrp_ble {
     sudo pkill hciattach 2>/dev/null || true
     sleep 1
 
-    # Mask bluetoothd for this boot - we manage hci0 directly via hciattach
-    # (bluez D-Bus activation would grab hci0 and leave HCI_INIT stuck)
-    sudo systemctl mask --runtime bluetooth 2>/dev/null || true
+    # Pause bluetoothd while we attach UART to avoid startup races.
+    sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
     sudo systemctl stop bluetooth 2>/dev/null || true
     attach_try() {
       local init_speed="$1"
@@ -99,6 +98,14 @@ function setup_abrp_ble {
 
     if ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
       echo "WCN3990 Bluetooth init did not reach UP RUNNING"
+    else
+      # BlueZ GATT server (bless) needs bluetoothd + LE mode.
+      sudo btmgmt -i hci0 power off >/dev/null 2>&1 || true
+      sudo btmgmt -i hci0 le on >/dev/null 2>&1 || true
+      sudo btmgmt -i hci0 bredr off >/dev/null 2>&1 || true
+      sudo btmgmt -i hci0 connectable on >/dev/null 2>&1 || true
+      sudo btmgmt -i hci0 power on >/dev/null 2>&1 || true
+      sudo systemctl start bluetooth 2>/dev/null || true
     fi
   fi
 

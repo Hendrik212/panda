@@ -6,7 +6,7 @@ Emulates an ELM327 OBD adapter over Bluetooth Low Energy (Nordic UART Service).
 ABRP connects to this as if it were a real OBD dongle and requests battery data.
 
 Data sources:
-- SoC, voltage, current: CAN bus 0x2fa via opendbc.car.hyundai.mqtt parser
+- SoC, voltage, current: CAN bus 0x2fa frames
 - Speed: carState.vEgo from cereal
 
 Requires:
@@ -438,16 +438,6 @@ def cereal_listener_thread():
 
     sm = messaging.SubMaster(['carState', 'can'])
 
-    # Import mqtt parser for CAN data
-    try:
-        from opendbc.car.hyundai import mqtt as hyundai_mqtt
-        mqtt_available = True
-    except ImportError:
-        mqtt_available = False
-        print("[ABRP-BLE] opendbc.car.hyundai.mqtt not available, CAN parsing disabled")
-
-    dat = {}  # For getParsedMessages
-
     while True:
         sm.update(100)  # 100ms timeout
 
@@ -457,18 +447,27 @@ def cereal_listener_thread():
             speed_kmh = speed_ms * 3.6
             ev_data.update(speed_kmh=speed_kmh)
 
-        # Get battery data from CAN via mqtt parser
-        if mqtt_available and sm.updated['can']:
-            # getParsedMessages updates global variables in mqtt module
-            hyundai_mqtt.getParsedMessages([sm['can']], 1, dat)
+        # Parse Hyundai battery metrics directly from bus 1 CAN frame 0x2FA.
+        if sm.updated['can']:
+            for can_msg in sm['can']:
+                if can_msg.src != 1 or can_msg.address != 0x2FA:
+                    continue
+                data = can_msg.dat
+                if len(data) < 26:
+                    continue
 
-            # Read current values from mqtt module globals
-            if hyundai_mqtt.soc_out >= 0:
-                ev_data.update(soc=hyundai_mqtt.soc_out)
-            if hyundai_mqtt.pack_voltage_out >= 0:
-                ev_data.update(voltage=hyundai_mqtt.pack_voltage_out)
-            if hyundai_mqtt.charging_current_out >= 0:
-                ev_data.update(current=hyundai_mqtt.charging_current_out)
+                # Byte 15: SoC in 0.5% units.
+                soc = data[15] / 2.0
+                # Bytes 4-5: Pack voltage in 0.1V.
+                voltage = ((data[4]) | (data[5] << 8)) * 0.1
+                # Bytes 10-11: Signed current in 0.1A.
+                current_raw = (data[10] << 8) | data[11]
+                if current_raw >= 0x8000:
+                    current_raw -= 0x10000
+                current = current_raw * 0.1
+
+                ev_data.update(soc=soc, voltage=voltage, current=current)
+                break
 
 
 async def main():
