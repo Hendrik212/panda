@@ -42,9 +42,9 @@ function setup_abrp_ble {
     sudo hciconfig hci0 up 2>/dev/null || true
   fi
 
-  # Install bless Python library for BLE GATT server (once)
-  if ! python3 -c "import bless" 2>/dev/null; then
-    pip install --quiet bless
+  # Install bless Python library for BLE GATT server (once, to /data since /usr is read-only)
+  if ! PYTHONPATH=/data/bless_packages python3 -c "import bless" 2>/dev/null; then
+    /usr/local/venv/bin/pip install --quiet --target /data/bless_packages bless
   fi
 }
 

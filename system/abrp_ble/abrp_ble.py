@@ -21,10 +21,15 @@ and Mode 22 PIDs for Hyundai BMS (7E4).
 """
 
 import asyncio
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
+
+# bless is installed to /data/bless_packages (system venv is read-only)
+if "/data/bless_packages" not in sys.path:
+    sys.path.insert(0, "/data/bless_packages")
 
 # BLE imports - will fail gracefully if not available
 try:
