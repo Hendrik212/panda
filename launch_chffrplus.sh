@@ -35,11 +35,11 @@ function setup_abrp_ble {
   # 'any' protocol skips ROME firmware loading - chip works without rampatch
   if [ -c /dev/ttyHS0 ] && ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
     echo "Starting WCN3990 Bluetooth via hciattach..."
-    # Stop bluetoothd so it doesn't conflict with hciattach (bluez 5.x D-Bus
-    # activates and calls HCIDEVUP within ~3s, leaving HCI_INIT stuck on failure)
+    # Mask bluetoothd for this boot - we manage hci0 directly via hciattach
+    # (bluez D-Bus activation would grab hci0 and leave HCI_INIT stuck)
+    sudo systemctl mask --runtime bluetooth 2>/dev/null || true
     sudo systemctl stop bluetooth 2>/dev/null || true
     sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
-    # 2s sleep: chip responds at 3Mbaud before bluetoothd D-Bus activates
     sleep 2
     sudo hciconfig hci0 up 2>/dev/null || true
   fi
