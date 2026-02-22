@@ -35,14 +35,13 @@ function setup_abrp_ble {
   # 'any' protocol skips ROME firmware loading - chip works without rampatch
   if [ -c /dev/ttyHS0 ] && ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
     echo "Starting WCN3990 Bluetooth via hciattach..."
-    # Stop bluetoothd so it doesn't conflict with hciattach (bluez 5.x claims hci0)
+    # Stop bluetoothd so it doesn't conflict with hciattach (bluez 5.x D-Bus
+    # activates and calls HCIDEVUP within ~3s, leaving HCI_INIT stuck on failure)
     sudo systemctl stop bluetooth 2>/dev/null || true
-    sleep 1
     sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
-    sleep 3
-    # Bring up BEFORE restarting bluetoothd so it inherits an UP adapter
+    # 2s sleep: chip responds at 3Mbaud before bluetoothd D-Bus activates
+    sleep 2
     sudo hciconfig hci0 up 2>/dev/null || true
-    sudo systemctl start bluetooth 2>/dev/null || true
   fi
 
   # Install bless Python library for BLE GATT server (once, to /data since /usr is read-only)
