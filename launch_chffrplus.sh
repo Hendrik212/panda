@@ -28,6 +28,36 @@ function agnos_init {
     $DIR/system/hardware/tici/updater $AGNOS_PY $MANIFEST
   fi
 
+  # Apply boot-partition-only updates when our custom boot update version changes.
+  # This keeps kernel-only releases automatic without forcing full AGNOS updates.
+  BOOT_VER_FILE="/data/agnos_boot_update_version"
+  BOOT_VER_CURRENT="$(cat "$BOOT_VER_FILE" 2>/dev/null || true)"
+  if [ "$BOOT_VER_CURRENT" != "$AGNOS_BOOT_UPDATE_VERSION" ]; then
+    AGNOS_PY="$DIR/system/hardware/tici/agnos.py"
+    BOOT_MANIFEST="/tmp/agnos_boot_only.json"
+
+    python3 - "$DIR/system/hardware/tici/agnos.json" "$BOOT_MANIFEST" << 'PY'
+import json
+import pathlib
+import sys
+
+src = pathlib.Path(sys.argv[1])
+dst = pathlib.Path(sys.argv[2])
+manifest = json.loads(src.read_text())
+boot = [p for p in manifest if p.get("name") == "boot"]
+if not boot:
+  raise RuntimeError("boot partition entry missing from agnos manifest")
+dst.write_text(json.dumps(boot, indent=2) + "\n")
+PY
+
+    if PYTHONPATH="$DIR" $AGNOS_PY --swap "$BOOT_MANIFEST"; then
+      echo "$AGNOS_BOOT_UPDATE_VERSION" | sudo tee "$BOOT_VER_FILE" >/dev/null
+      sudo reboot
+    else
+      echo "Boot-only AGNOS update failed; will retry on next boot"
+    fi
+  fi
+
   # Setup BLE for ABRP bridge (runs once after BT kernel is installed)
   setup_abrp_ble
 }
