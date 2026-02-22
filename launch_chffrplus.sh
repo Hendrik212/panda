@@ -20,6 +20,8 @@ function agnos_init {
   if [ $(< /VERSION) != "$AGNOS_VERSION" ]; then
     AGNOS_PY="$DIR/system/hardware/tici/agnos.py"
     MANIFEST="$DIR/system/hardware/tici/agnos.json"
+    # Use venv python so agnos.py can import capnp/cereal
+    export PATH="/usr/local/venv/bin:$PATH"
     if $AGNOS_PY --verify $MANIFEST; then
       sudo reboot
     fi
