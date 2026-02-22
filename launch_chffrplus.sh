@@ -40,8 +40,11 @@ function setup_abrp_ble {
     sudo systemctl mask --runtime bluetooth 2>/dev/null || true
     sudo systemctl stop bluetooth 2>/dev/null || true
     sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
-    sleep 2
+    # Call hciconfig up while kernel auto-init is in INIT RUNNING state (~0.3s).
+    # After auto-init completes (~1s) hci0 goes DOWN and hciconfig up gets EBUSY.
+    sleep 0.3
     sudo hciconfig hci0 up 2>/dev/null || true
+    sleep 2
   fi
 
   # Install bless Python library for BLE GATT server (once, to /data since /usr is read-only)
