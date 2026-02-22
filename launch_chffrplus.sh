@@ -84,7 +84,8 @@ function setup_abrp_ble {
 
       # Repeated short tries are more robust than a single fixed timing window.
       for _ in {1..10}; do
-        if sudo hciconfig hci0 up 2>/dev/null; then
+        sudo hciconfig hci0 up 2>/dev/null || true
+        if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
           return 0
         fi
         sleep 0.1
