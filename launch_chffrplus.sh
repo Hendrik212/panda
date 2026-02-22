@@ -35,8 +35,11 @@ function setup_abrp_ble {
   # 'any' protocol skips ROME firmware loading - chip works without rampatch
   if [ -c /dev/ttyHS0 ] && ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
     echo "Starting WCN3990 Bluetooth via hciattach..."
+    # Stop bluetoothd so it doesn't conflict with hciattach (bluez 5.x claims hci0)
+    sudo systemctl stop bluetooth 2>/dev/null || true
     sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
     sleep 3
+    sudo hciconfig hci0 up 2>/dev/null || true
   fi
 
   # Install bless Python library for BLE GATT server (once)
