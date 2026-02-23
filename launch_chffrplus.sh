@@ -63,39 +63,21 @@ PY
 }
 
 function setup_abrp_ble {
-  # Prefer kernel hci_qca + DT bring-up, but fall back to userspace attach
-  # on kernels where serdev probing does not create hci0.
+  # Stable path on this platform: userspace hciattach controls bring-up.
   if [ -c /dev/ttyHS0 ]; then
     sudo pkill btattach 2>/dev/null || true
     sudo pkill hciattach 2>/dev/null || true
-    sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
+    sleep 1
 
-    # Give kernel probe/init a short window for DT-driven bring-up.
-    for _ in {1..20}; do
-      if hciconfig hci0 >/dev/null 2>&1; then
-        break
-      fi
-      sleep 0.25
-    done
+    sudo systemctl mask --runtime bluetooth 2>/dev/null || true
+    sudo systemctl stop bluetooth 2>/dev/null || true
 
-    # Fallback: userspace attach path known to work on this platform.
-    if ! hciconfig hci0 >/dev/null 2>&1; then
-      sudo systemctl mask --runtime bluetooth 2>/dev/null || true
-      sudo systemctl stop bluetooth 2>/dev/null || true
-      for _ in {1..3}; do
-        sudo pkill hciattach 2>/dev/null || true
-        sleep 1
-        sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
-        sleep 0.3
-        sudo hciconfig hci0 up 2>/dev/null || true
-        if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
-          break
-        fi
-      done
-      sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
-    fi
+    sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
+    sleep 0.3
+    sudo hciconfig hci0 up 2>/dev/null || true
 
     if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
+      sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
       sudo systemctl start bluetooth 2>/dev/null || true
       sudo btmgmt -i hci0 power off >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 le on >/dev/null 2>&1 || true
@@ -103,7 +85,7 @@ function setup_abrp_ble {
       sudo btmgmt -i hci0 connectable on >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 power on >/dev/null 2>&1 || true
     else
-      echo "WCN3990 hci0 not ready yet; bluetoothd will retry"
+      echo "WCN3990 Bluetooth init did not reach UP RUNNING"
     fi
   fi
 
