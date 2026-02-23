@@ -466,23 +466,22 @@ class ABRPBLEServer:
         # Format response with CR/LF and prompt
         full_response = f"{response}\r\n>"
         print(f"[ABRP-BLE] TX: {response}")
+        payload = bytearray(full_response.encode('utf-8'))
 
-        try:
-            # Send notification
-            await self.server.notify_subscribers(
-                NUS_TX_CHAR_UUID,
-                bytearray(full_response.encode('utf-8'))
-            )
-        except Exception as e:
-            print(f"[ABRP-BLE] Failed to send response: {e}")
-
-        try:
-            await self.server.notify_subscribers(
-                OBD_NOTIFY_CHAR_UUID,
-                bytearray(full_response.encode('utf-8'))
-            )
-        except Exception:
-            pass
+        # bless on BlueZ 5.72 uses update_value(service_uuid, char_uuid)
+        # rather than notify_subscribers.
+        for service_uuid, char_uuid in (
+            (NUS_SERVICE_UUID, NUS_TX_CHAR_UUID),
+            (OBD_SERVICE_UUID, OBD_NOTIFY_CHAR_UUID),
+        ):
+            try:
+                ch = self.server.get_characteristic(char_uuid)
+                if ch is None:
+                    continue
+                ch.value = payload
+                self.server.update_value(service_uuid, char_uuid)
+            except Exception as e:
+                print(f"[ABRP-BLE] Failed to update {char_uuid}: {e}")
 
 
 def cereal_listener_thread():
