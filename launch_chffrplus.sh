@@ -77,6 +77,7 @@ function setup_abrp_ble {
     attach_try() {
       local init_speed="$1"
       local target_speed="$2"
+      sudo pkill btattach 2>/dev/null || true
       sudo pkill hciattach 2>/dev/null || true
       sleep 0.2
       sudo hciattach -s "$init_speed" /dev/ttyHS0 any "$target_speed" flow 2>/dev/null &
@@ -92,9 +93,29 @@ function setup_abrp_ble {
       return 1
     }
 
+    attach_try_qca() {
+      sudo pkill btattach 2>/dev/null || true
+      sudo pkill hciattach 2>/dev/null || true
+      sleep 0.2
+      sudo btattach -B /dev/ttyHS0 -P qca -S 3000000 2>/dev/null &
+
+      for _ in {1..20}; do
+        sudo timeout 0.5 hciconfig hci0 up 2>/dev/null || true
+        if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
+          return 0
+        fi
+        sleep 0.1
+      done
+      return 1
+    }
+
     # Prefer high-speed mode, but fall back to fixed 115200 when the chip
     # comes up in a cold/default UART state.
-    attach_try 115200 3000000 || attach_try 115200 115200 || true
+    if [ -x /usr/bin/btattach ] && [ -f /firmware/image/qca/rampatch_02140201.bin ]; then
+      attach_try_qca || attach_try 115200 3000000 || attach_try 115200 115200 || true
+    else
+      attach_try 115200 3000000 || attach_try 115200 115200 || true
+    fi
 
     if ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
       echo "WCN3990 Bluetooth init did not reach UP RUNNING"
