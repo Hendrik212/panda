@@ -94,8 +94,8 @@ function setup_abrp_ble {
     }
 
     # On this kernel/userspace combo, fallback to fixed 115200 leaves hci0 in a
-    # stuck state (DOWN/EBUSY). Keep only the known-good high-speed attach path.
-    if ! attach_try 115200 3000000; then
+    # stuck state (DOWN/EBUSY). Use only high-speed attach attempts.
+    if ! attach_try 115200 3000000 && ! attach_try 3000000 3000000 && ! attach_try 115200 3000000; then
       sudo pkill btattach 2>/dev/null || true
       sudo pkill hciattach 2>/dev/null || true
       sudo hciconfig hci0 down 2>/dev/null || true
