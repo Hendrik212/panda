@@ -93,28 +93,12 @@ function setup_abrp_ble {
       return 1
     }
 
-    attach_try_qca() {
+    # On this kernel/userspace combo, fallback to fixed 115200 leaves hci0 in a
+    # stuck state (DOWN/EBUSY). Keep only the known-good high-speed attach path.
+    if ! attach_try 115200 3000000; then
       sudo pkill btattach 2>/dev/null || true
       sudo pkill hciattach 2>/dev/null || true
-      sleep 0.2
-      sudo btattach -B /dev/ttyHS0 -P qca -S 3000000 2>/dev/null &
-
-      for _ in {1..20}; do
-        sudo timeout 0.5 hciconfig hci0 up 2>/dev/null || true
-        if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
-          return 0
-        fi
-        sleep 0.1
-      done
-      return 1
-    }
-
-    # Prefer high-speed mode, but fall back to fixed 115200 when the chip
-    # comes up in a cold/default UART state.
-    if [ -x /usr/bin/btattach ] && [ -f /firmware/image/qca/rampatch_02140201.bin ]; then
-      attach_try_qca || attach_try 115200 3000000 || attach_try 115200 115200 || true
-    else
-      attach_try 115200 3000000 || attach_try 115200 115200 || true
+      sudo hciconfig hci0 down 2>/dev/null || true
     fi
 
     if ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
