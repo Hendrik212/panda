@@ -63,49 +63,30 @@ PY
 }
 
 function setup_abrp_ble {
-  # Bring up WCN3990 BT chip via UART (ttyHS0 = SE6 UART at 0x898000)
-  # 'any' protocol skips ROME firmware loading - chip works without rampatch
-  if [ -c /dev/ttyHS0 ] && ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
-    echo "Starting WCN3990 Bluetooth via hciattach..."
-    # Always reset prior attach state so soft-rebooted chip state is deterministic.
+  # Kernel hci_qca + DT (qcom,wcn3990-bt) owns bring-up on AGNOS BT kernels.
+  if [ -c /dev/ttyHS0 ]; then
+    sudo pkill btattach 2>/dev/null || true
     sudo pkill hciattach 2>/dev/null || true
-    sleep 1
-
-    # Pause bluetoothd while we attach UART to avoid startup races.
     sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
-    sudo systemctl stop bluetooth 2>/dev/null || true
-    attach_once() {
-      local init_speed="$1"
-      local target_speed="$2"
-      sudo pkill btattach 2>/dev/null || true
-      sudo pkill hciattach 2>/dev/null || true
-      sleep 1
-      sudo systemctl mask --runtime bluetooth 2>/dev/null || true
-      sudo systemctl stop bluetooth 2>/dev/null || true
-      sudo hciattach -s "$init_speed" /dev/ttyHS0 any "$target_speed" flow 2>/dev/null &
-      sleep 0.3
-      sudo hciconfig hci0 up 2>/dev/null || true
-      sleep 0.2
-      hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"
-    }
 
-    # Keep the exact timing sequence that works interactively.
-    if ! attach_once 115200 3000000 && ! attach_once 3000000 3000000; then
-      sudo pkill btattach 2>/dev/null || true
-      sudo pkill hciattach 2>/dev/null || true
-      sudo hciconfig hci0 down 2>/dev/null || true
-    fi
+    # Give kernel probe/init a short window before starting bluetoothd.
+    for _ in {1..20}; do
+      if hciconfig hci0 >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.25
+    done
 
-    if ! hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
-      echo "WCN3990 Bluetooth init did not reach UP RUNNING"
-    else
-      # BlueZ GATT server (bless) needs bluetoothd + LE mode.
+    sudo systemctl start bluetooth 2>/dev/null || true
+
+    if hciconfig hci0 >/dev/null 2>&1; then
       sudo btmgmt -i hci0 power off >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 le on >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 bredr off >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 connectable on >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 power on >/dev/null 2>&1 || true
-      sudo systemctl start bluetooth 2>/dev/null || true
+    else
+      echo "WCN3990 hci0 not ready yet; bluetoothd will retry"
     fi
   fi
 
