@@ -73,16 +73,15 @@ function setup_abrp_ble {
     sudo systemctl stop bluetooth 2>/dev/null || true
 
     attach_once() {
-      local init_speed="$1"
       sudo pkill hciattach 2>/dev/null || true
       sleep 1
-      sudo hciattach -s "$init_speed" /dev/ttyHS0 any 3000000 flow 2>/dev/null &
+      sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
       sleep 0.3
       sudo hciconfig hci0 up 2>/dev/null || true
       hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"
     }
 
-    attach_once 115200 || attach_once 3000000 || true
+    attach_once || true
 
     if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
       sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
