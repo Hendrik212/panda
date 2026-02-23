@@ -63,19 +63,28 @@ PY
 }
 
 function setup_abrp_ble {
-  # Kernel hci_qca + DT (qcom,wcn3990-bt) owns bring-up on AGNOS BT kernels.
+  # Prefer kernel hci_qca + DT bring-up, but fall back to userspace attach
+  # on kernels where serdev probing does not create hci0.
   if [ -c /dev/ttyHS0 ]; then
     sudo pkill btattach 2>/dev/null || true
     sudo pkill hciattach 2>/dev/null || true
     sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
 
-    # Give kernel probe/init a short window before starting bluetoothd.
+    # Give kernel probe/init a short window for DT-driven bring-up.
     for _ in {1..20}; do
       if hciconfig hci0 >/dev/null 2>&1; then
         break
       fi
       sleep 0.25
     done
+
+    # Fallback: userspace attach path known to work on this platform.
+    if ! hciconfig hci0 >/dev/null 2>&1; then
+      sudo systemctl stop bluetooth 2>/dev/null || true
+      sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
+      sleep 0.3
+      sudo hciconfig hci0 up 2>/dev/null || true
+    fi
 
     sudo systemctl start bluetooth 2>/dev/null || true
 
