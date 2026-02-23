@@ -59,7 +59,8 @@ NUS_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # Notify (device → 
 
 # OBDLink-style BLE UART profile (used by many ABRP-supported dongles)
 OBD_SERVICE_UUID = "0000fff0-0000-1000-8000-00805f9b34fb"
-OBD_CHAR_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"      # Read/Notify/Write
+OBD_NOTIFY_CHAR_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"  # Read/Notify
+OBD_WRITE_CHAR_UUID = "0000fff2-0000-1000-8000-00805f9b34fb"   # Write/WriteWithoutResponse
 
 # Device Information service to improve compatibility probing
 DIS_SERVICE_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
@@ -372,13 +373,17 @@ class ABRPBLEServer:
         await self.server.add_new_service(OBD_SERVICE_UUID)
         await self.server.add_new_characteristic(
             OBD_SERVICE_UUID,
-            OBD_CHAR_UUID,
-            GATTCharacteristicProperties.notify
-            | GATTCharacteristicProperties.read
-            | GATTCharacteristicProperties.write
-            | GATTCharacteristicProperties.write_without_response,
+            OBD_NOTIFY_CHAR_UUID,
+            GATTCharacteristicProperties.notify | GATTCharacteristicProperties.read,
             None,
-            GATTAttributePermissions.readable | GATTAttributePermissions.writeable
+            GATTAttributePermissions.readable
+        )
+        await self.server.add_new_characteristic(
+            OBD_SERVICE_UUID,
+            OBD_WRITE_CHAR_UUID,
+            GATTCharacteristicProperties.write | GATTCharacteristicProperties.write_without_response,
+            None,
+            GATTAttributePermissions.writeable
         )
 
         # Add Device Information Service (common compatibility probe target)
@@ -424,7 +429,7 @@ class ABRPBLEServer:
 
     def _on_write(self, characteristic: BlessGATTCharacteristic, value: bytes, **kwargs):
         """Handle write requests (commands from ABRP)."""
-        if characteristic.uuid not in (NUS_RX_CHAR_UUID, OBD_CHAR_UUID):
+        if characteristic.uuid not in (NUS_RX_CHAR_UUID, OBD_WRITE_CHAR_UUID):
             return
 
         # Decode received data
@@ -472,7 +477,7 @@ class ABRPBLEServer:
 
         try:
             await self.server.notify_subscribers(
-                OBD_CHAR_UUID,
+                OBD_NOTIFY_CHAR_UUID,
                 bytearray(full_response.encode('utf-8'))
             )
         except Exception:
