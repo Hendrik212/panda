@@ -337,6 +337,7 @@ class ABRPBLEServer:
         self.running = False
         self.rx_buffer = ""
         self.recovering_bt = False
+        self.attach_proc: Optional[subprocess.Popen] = None
 
     @staticmethod
     def _run_cmd(cmd: list[str], timeout: float = 3.0) -> tuple[int, str]:
@@ -368,15 +369,22 @@ class ABRPBLEServer:
         try:
             for i in range(1, attempts + 1):
                 print(f"[ABRP-BLE] BT recovery attempt {i}/{attempts}")
-                self._run_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
                 self._run_cmd(["sudo", "pkill", "hciattach"], timeout=1.0)
+                if self.attach_proc is not None:
+                    try:
+                        self.attach_proc.terminate()
+                        self.attach_proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                    self.attach_proc = None
                 await asyncio.sleep(1.0)
 
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
+                self._run_cmd(["sudo", "hciconfig", "hci0", "down"], timeout=1.5)
 
                 # Start attach in background.
-                subprocess.Popen(
+                self.attach_proc = subprocess.Popen(
                     ["sudo", "hciattach", "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -394,6 +402,15 @@ class ABRPBLEServer:
                     self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "power", "on"], timeout=2.0)
                     print("[ABRP-BLE] Bluetooth adapter is UP RUNNING")
                     return True
+                else:
+                    self._run_cmd(["sudo", "pkill", "hciattach"], timeout=1.0)
+                    if self.attach_proc is not None:
+                        try:
+                            self.attach_proc.terminate()
+                            self.attach_proc.wait(timeout=1.0)
+                        except Exception:
+                            pass
+                        self.attach_proc = None
 
             print("[ABRP-BLE] BT recovery failed after retries")
             return False
