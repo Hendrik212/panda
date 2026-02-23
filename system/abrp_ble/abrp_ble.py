@@ -57,6 +57,16 @@ NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # Write (phone → device)
 NUS_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # Notify (device → phone)
 
+# OBDLink-style BLE UART profile (used by many ABRP-supported dongles)
+OBD_SERVICE_UUID = "0000fff0-0000-1000-8000-00805f9b34fb"
+OBD_CHAR_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"      # Read/Notify/Write
+
+# Device Information service to improve compatibility probing
+DIS_SERVICE_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
+DIS_MANUFACTURER_UUID = "00002a29-0000-1000-8000-00805f9b34fb"
+DIS_MODEL_UUID = "00002a24-0000-1000-8000-00805f9b34fb"
+DIS_FWREV_UUID = "00002a26-0000-1000-8000-00805f9b34fb"
+
 
 @dataclass
 class EVData:
@@ -204,10 +214,10 @@ class ELM327Handler:
 
         # Device description
         if at_cmd == "I":
-            return "ELM327 v1.5"
+            return "OBDLink CX"
 
         if at_cmd == "@1":
-            return "ABRP_OBD_BRIDGE"
+            return "OBDLink CX"
 
         # Unknown AT command - just OK
         return "OK"
@@ -333,7 +343,7 @@ class ABRPBLEServer:
 
         print("[ABRP-BLE] Starting BLE server...")
 
-        self.server = BlessServer(name="ABRP_OBD")
+        self.server = BlessServer(name="OBDLink CX")
         self.server.read_request_func = self._on_read
         self.server.write_request_func = self._on_write
 
@@ -358,10 +368,47 @@ class ABRPBLEServer:
             GATTAttributePermissions.readable
         )
 
+        # Add OBDLink-style UART profile
+        await self.server.add_new_service(OBD_SERVICE_UUID)
+        await self.server.add_new_characteristic(
+            OBD_SERVICE_UUID,
+            OBD_CHAR_UUID,
+            GATTCharacteristicProperties.notify
+            | GATTCharacteristicProperties.read
+            | GATTCharacteristicProperties.write
+            | GATTCharacteristicProperties.write_without_response,
+            None,
+            GATTAttributePermissions.readable | GATTAttributePermissions.writeable
+        )
+
+        # Add Device Information Service (common compatibility probe target)
+        await self.server.add_new_service(DIS_SERVICE_UUID)
+        await self.server.add_new_characteristic(
+            DIS_SERVICE_UUID,
+            DIS_MANUFACTURER_UUID,
+            GATTCharacteristicProperties.read,
+            bytearray(b"OBD Solutions, LLC"),
+            GATTAttributePermissions.readable
+        )
+        await self.server.add_new_characteristic(
+            DIS_SERVICE_UUID,
+            DIS_MODEL_UUID,
+            GATTCharacteristicProperties.read,
+            bytearray(b"OBDLink CX"),
+            GATTAttributePermissions.readable
+        )
+        await self.server.add_new_characteristic(
+            DIS_SERVICE_UUID,
+            DIS_FWREV_UUID,
+            GATTCharacteristicProperties.read,
+            bytearray(b"5.6.19"),
+            GATTAttributePermissions.readable
+        )
+
         # Start advertising
         await self.server.start()
         self.running = True
-        print("[ABRP-BLE] BLE server started, advertising as 'ABRP_OBD'")
+        print("[ABRP-BLE] BLE server started, advertising as 'OBDLink CX'")
         return True
 
     async def stop(self):
@@ -377,7 +424,7 @@ class ABRPBLEServer:
 
     def _on_write(self, characteristic: BlessGATTCharacteristic, value: bytes, **kwargs):
         """Handle write requests (commands from ABRP)."""
-        if characteristic.uuid != NUS_RX_CHAR_UUID:
+        if characteristic.uuid not in (NUS_RX_CHAR_UUID, OBD_CHAR_UUID):
             return
 
         # Decode received data
@@ -422,6 +469,14 @@ class ABRPBLEServer:
             )
         except Exception as e:
             print(f"[ABRP-BLE] Failed to send response: {e}")
+
+        try:
+            await self.server.notify_subscribers(
+                OBD_CHAR_UUID,
+                bytearray(full_response.encode('utf-8'))
+            )
+        except Exception:
+            pass
 
 
 def cereal_listener_thread():
