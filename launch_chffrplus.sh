@@ -63,38 +63,8 @@ PY
 }
 
 function setup_abrp_ble {
-  # Stable path on this platform: userspace hciattach controls bring-up.
-  if [ -c /dev/ttyHS0 ]; then
-    sudo pkill btattach 2>/dev/null || true
-    sudo pkill hciattach 2>/dev/null || true
-    sleep 1
-
-    sudo systemctl mask --runtime bluetooth 2>/dev/null || true
-    sudo systemctl stop bluetooth 2>/dev/null || true
-
-    attach_once() {
-      sudo pkill hciattach 2>/dev/null || true
-      sleep 1
-      sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
-      sleep 0.3
-      sudo hciconfig hci0 up 2>/dev/null || true
-      hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"
-    }
-
-    attach_once || true
-
-    if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
-      sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
-      sudo systemctl start bluetooth 2>/dev/null || true
-      sudo btmgmt -i hci0 power off >/dev/null 2>&1 || true
-      sudo btmgmt -i hci0 le on >/dev/null 2>&1 || true
-      sudo btmgmt -i hci0 bredr off >/dev/null 2>&1 || true
-      sudo btmgmt -i hci0 connectable on >/dev/null 2>&1 || true
-      sudo btmgmt -i hci0 power on >/dev/null 2>&1 || true
-    else
-      echo "WCN3990 Bluetooth init did not reach UP RUNNING"
-    fi
-  fi
+  # BT bring-up/recovery is handled inside system/abrp_ble/abrp_ble.py.
+  # Keep launch-time setup minimal and avoid racing service-managed recovery.
 
   # Install bless Python library for BLE GATT server (once, to /data since /usr is read-only)
   if ! PYTHONPATH=/data/bless_packages python3 -c "import bless" 2>/dev/null; then

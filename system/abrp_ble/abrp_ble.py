@@ -21,6 +21,7 @@ and Mode 22 PIDs for Hyundai BMS (7E4).
 """
 
 import asyncio
+import subprocess
 import sys
 import threading
 import time
@@ -335,11 +336,78 @@ class ABRPBLEServer:
         self.elm = ELM327Handler()
         self.running = False
         self.rx_buffer = ""
+        self.recovering_bt = False
+
+    @staticmethod
+    def _run_cmd(cmd: list[str], timeout: float = 3.0) -> tuple[int, str]:
+        try:
+            p = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            return p.returncode, p.stdout
+        except Exception as e:
+            return 1, str(e)
+
+    @staticmethod
+    def _hci_up_running() -> bool:
+        code, out = ABRPBLEServer._run_cmd(["hciconfig", "hci0"], timeout=2.0)
+        return code == 0 and ("UP RUNNING" in out)
+
+    async def ensure_bt_ready(self, attempts: int = 5) -> bool:
+        """Bring up hci0 with a userspace sequence known to work on this platform."""
+        if self._hci_up_running():
+            return True
+
+        print("[ABRP-BLE] Recovering Bluetooth adapter...")
+        self.recovering_bt = True
+        try:
+            for i in range(1, attempts + 1):
+                print(f"[ABRP-BLE] BT recovery attempt {i}/{attempts}")
+                self._run_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
+                self._run_cmd(["sudo", "pkill", "hciattach"], timeout=1.0)
+                await asyncio.sleep(1.0)
+
+                self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
+                self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
+
+                # Start attach in background.
+                subprocess.Popen(
+                    ["sudo", "hciattach", "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                await asyncio.sleep(0.3)
+                self._run_cmd(["sudo", "hciconfig", "hci0", "up"], timeout=2.0)
+
+                if self._hci_up_running():
+                    self._run_cmd(["sudo", "systemctl", "unmask", "--runtime", "bluetooth"], timeout=3.0)
+                    self._run_cmd(["sudo", "systemctl", "start", "bluetooth"], timeout=3.0)
+                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "power", "off"], timeout=2.0)
+                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "le", "on"], timeout=2.0)
+                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "bredr", "off"], timeout=2.0)
+                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "connectable", "on"], timeout=2.0)
+                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "power", "on"], timeout=2.0)
+                    print("[ABRP-BLE] Bluetooth adapter is UP RUNNING")
+                    return True
+
+            print("[ABRP-BLE] BT recovery failed after retries")
+            return False
+        finally:
+            self.recovering_bt = False
 
     async def start(self):
         """Start the BLE server."""
         if not BLE_AVAILABLE:
             print("[ABRP-BLE] BLE not available, cannot start server")
+            return False
+
+        ready = await self.ensure_bt_ready()
+        if not ready:
             return False
 
         print("[ABRP-BLE] Starting BLE server...")
@@ -544,13 +612,20 @@ async def main():
     started = await server.start()
 
     if not started:
-        print("[ABRP-BLE] BLE server failed to start. Is Bluetooth enabled in kernel?")
-        print("[ABRP-BLE] Running in data-only mode (no BLE advertising)...")
+        print("[ABRP-BLE] BLE server failed to start. Will keep retrying recovery...")
 
     # Run forever
     try:
         while True:
             await asyncio.sleep(5.0)
+
+            # Self-heal BT/advertising if adapter dropped or start failed.
+            if not server.running and not server.recovering_bt:
+                await server.start()
+            elif server.running and not server._hci_up_running() and not server.recovering_bt:
+                print("[ABRP-BLE] hci0 dropped, restarting BLE server")
+                await server.stop()
+                await server.start()
 
             # Periodic status log
             data = ev_data.get_snapshot()
