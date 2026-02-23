@@ -74,28 +74,23 @@ function setup_abrp_ble {
     # Pause bluetoothd while we attach UART to avoid startup races.
     sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
     sudo systemctl stop bluetooth 2>/dev/null || true
-    attach_try() {
+    attach_once() {
       local init_speed="$1"
       local target_speed="$2"
       sudo pkill btattach 2>/dev/null || true
       sudo pkill hciattach 2>/dev/null || true
-      sleep 0.2
+      sleep 1
+      sudo systemctl mask --runtime bluetooth 2>/dev/null || true
+      sudo systemctl stop bluetooth 2>/dev/null || true
       sudo hciattach -s "$init_speed" /dev/ttyHS0 any "$target_speed" flow 2>/dev/null &
-
-      # Repeated short tries are more robust than a single fixed timing window.
-      for _ in {1..10}; do
-        sudo timeout 0.5 hciconfig hci0 up 2>/dev/null || true
-        if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
-          return 0
-        fi
-        sleep 0.1
-      done
-      return 1
+      sleep 0.3
+      sudo hciconfig hci0 up 2>/dev/null || true
+      sleep 0.2
+      hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"
     }
 
-    # On this kernel/userspace combo, fallback to fixed 115200 leaves hci0 in a
-    # stuck state (DOWN/EBUSY). Use only high-speed attach attempts.
-    if ! attach_try 115200 3000000 && ! attach_try 3000000 3000000 && ! attach_try 115200 3000000; then
+    # Keep the exact timing sequence that works interactively.
+    if ! attach_once 115200 3000000 && ! attach_once 3000000 3000000; then
       sudo pkill btattach 2>/dev/null || true
       sudo pkill hciattach 2>/dev/null || true
       sudo hciconfig hci0 down 2>/dev/null || true
