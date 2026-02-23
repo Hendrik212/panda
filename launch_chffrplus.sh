@@ -80,15 +80,23 @@ function setup_abrp_ble {
 
     # Fallback: userspace attach path known to work on this platform.
     if ! hciconfig hci0 >/dev/null 2>&1; then
+      sudo systemctl mask --runtime bluetooth 2>/dev/null || true
       sudo systemctl stop bluetooth 2>/dev/null || true
-      sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
-      sleep 0.3
-      sudo hciconfig hci0 up 2>/dev/null || true
+      for _ in {1..3}; do
+        sudo pkill hciattach 2>/dev/null || true
+        sleep 1
+        sudo hciattach -s 115200 /dev/ttyHS0 any 3000000 flow 2>/dev/null &
+        sleep 0.3
+        sudo hciconfig hci0 up 2>/dev/null || true
+        if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
+          break
+        fi
+      done
+      sudo systemctl unmask --runtime bluetooth 2>/dev/null || true
     fi
 
-    sudo systemctl start bluetooth 2>/dev/null || true
-
-    if hciconfig hci0 >/dev/null 2>&1; then
+    if hciconfig hci0 2>/dev/null | grep -q "UP RUNNING"; then
+      sudo systemctl start bluetooth 2>/dev/null || true
       sudo btmgmt -i hci0 power off >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 le on >/dev/null 2>&1 || true
       sudo btmgmt -i hci0 bredr off >/dev/null 2>&1 || true
