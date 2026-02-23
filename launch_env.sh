@@ -22,7 +22,7 @@ fi
 # Bump this when boot partition content should be auto-applied on reboot.
 # This is intentionally separate from AGNOS_VERSION to avoid full-system update loops.
 if [ -z "$AGNOS_BOOT_UPDATE_VERSION" ]; then
-  export AGNOS_BOOT_UPDATE_VERSION="16.0.2"
+  export AGNOS_BOOT_UPDATE_VERSION="16.0.3"
 fi
 
 export STAGING_ROOT="/data/safe_staging"
