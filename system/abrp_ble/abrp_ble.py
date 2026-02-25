@@ -615,7 +615,7 @@ def cereal_listener_thread():
                 break
 
 
-async def main():
+async def async_main():
     """Main entry point."""
     print("[ABRP-BLE] ABRP OBD BLE Bridge starting...")
     print("[ABRP-BLE] Waiting for BLE kernel support...")
@@ -656,5 +656,9 @@ async def main():
         await server.stop()
 
 
+def main():
+    asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
