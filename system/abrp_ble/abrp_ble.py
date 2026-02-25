@@ -428,79 +428,85 @@ class ABRPBLEServer:
             return False
 
         print("[ABRP-BLE] Starting BLE server...")
+        try:
+            self.server = BlessServer(name="OBDLink CX")
+            self.server.read_request_func = self._on_read
+            self.server.write_request_func = self._on_write
 
-        self.server = BlessServer(name="OBDLink CX")
-        self.server.read_request_func = self._on_read
-        self.server.write_request_func = self._on_write
+            # Add OBDLink-style UART profile first.
+            # bless advertises only the first service UUID, so keep FFF0 first.
+            await self.server.add_new_service(OBD_SERVICE_UUID)
+            await self.server.add_new_characteristic(
+                OBD_SERVICE_UUID,
+                OBD_NOTIFY_CHAR_UUID,
+                GATTCharacteristicProperties.notify | GATTCharacteristicProperties.read,
+                None,
+                GATTAttributePermissions.readable
+            )
+            await self.server.add_new_characteristic(
+                OBD_SERVICE_UUID,
+                OBD_WRITE_CHAR_UUID,
+                GATTCharacteristicProperties.write | GATTCharacteristicProperties.write_without_response,
+                None,
+                GATTAttributePermissions.writeable
+            )
 
-        # Add OBDLink-style UART profile first.
-        # bless advertises only the first service UUID, so keep FFF0 first.
-        await self.server.add_new_service(OBD_SERVICE_UUID)
-        await self.server.add_new_characteristic(
-            OBD_SERVICE_UUID,
-            OBD_NOTIFY_CHAR_UUID,
-            GATTCharacteristicProperties.notify | GATTCharacteristicProperties.read,
-            None,
-            GATTAttributePermissions.readable
-        )
-        await self.server.add_new_characteristic(
-            OBD_SERVICE_UUID,
-            OBD_WRITE_CHAR_UUID,
-            GATTCharacteristicProperties.write | GATTCharacteristicProperties.write_without_response,
-            None,
-            GATTAttributePermissions.writeable
-        )
+            # Add Nordic UART Service
+            await self.server.add_new_service(NUS_SERVICE_UUID)
 
-        # Add Nordic UART Service
-        await self.server.add_new_service(NUS_SERVICE_UUID)
+            # RX characteristic (write from phone)
+            await self.server.add_new_characteristic(
+                NUS_SERVICE_UUID,
+                NUS_RX_CHAR_UUID,
+                GATTCharacteristicProperties.write | GATTCharacteristicProperties.write_without_response,
+                None,
+                GATTAttributePermissions.writeable
+            )
 
-        # RX characteristic (write from phone)
-        await self.server.add_new_characteristic(
-            NUS_SERVICE_UUID,
-            NUS_RX_CHAR_UUID,
-            GATTCharacteristicProperties.write | GATTCharacteristicProperties.write_without_response,
-            None,
-            GATTAttributePermissions.writeable
-        )
+            # TX characteristic (notify to phone)
+            await self.server.add_new_characteristic(
+                NUS_SERVICE_UUID,
+                NUS_TX_CHAR_UUID,
+                GATTCharacteristicProperties.notify | GATTCharacteristicProperties.read,
+                None,
+                GATTAttributePermissions.readable
+            )
 
-        # TX characteristic (notify to phone)
-        await self.server.add_new_characteristic(
-            NUS_SERVICE_UUID,
-            NUS_TX_CHAR_UUID,
-            GATTCharacteristicProperties.notify | GATTCharacteristicProperties.read,
-            None,
-            GATTAttributePermissions.readable
-        )
+            # Add Device Information Service (common compatibility probe target)
+            await self.server.add_new_service(DIS_SERVICE_UUID)
+            await self.server.add_new_characteristic(
+                DIS_SERVICE_UUID,
+                DIS_MANUFACTURER_UUID,
+                GATTCharacteristicProperties.read,
+                bytearray(b"OBD Solutions, LLC"),
+                GATTAttributePermissions.readable
+            )
+            await self.server.add_new_characteristic(
+                DIS_SERVICE_UUID,
+                DIS_MODEL_UUID,
+                GATTCharacteristicProperties.read,
+                bytearray(b"OBDLink CX"),
+                GATTAttributePermissions.readable
+            )
+            await self.server.add_new_characteristic(
+                DIS_SERVICE_UUID,
+                DIS_FWREV_UUID,
+                GATTCharacteristicProperties.read,
+                bytearray(b"5.6.19"),
+                GATTAttributePermissions.readable
+            )
 
-        # Add Device Information Service (common compatibility probe target)
-        await self.server.add_new_service(DIS_SERVICE_UUID)
-        await self.server.add_new_characteristic(
-            DIS_SERVICE_UUID,
-            DIS_MANUFACTURER_UUID,
-            GATTCharacteristicProperties.read,
-            bytearray(b"OBD Solutions, LLC"),
-            GATTAttributePermissions.readable
-        )
-        await self.server.add_new_characteristic(
-            DIS_SERVICE_UUID,
-            DIS_MODEL_UUID,
-            GATTCharacteristicProperties.read,
-            bytearray(b"OBDLink CX"),
-            GATTAttributePermissions.readable
-        )
-        await self.server.add_new_characteristic(
-            DIS_SERVICE_UUID,
-            DIS_FWREV_UUID,
-            GATTCharacteristicProperties.read,
-            bytearray(b"5.6.19"),
-            GATTAttributePermissions.readable
-        )
-
-        # Start advertising
-        await self.server.start()
-        self.running = True
-        print("[ABRP-BLE] BLE server started, advertising as 'OBDLink CX'")
-        return True
+            # Start advertising
+            await self.server.start()
+            self.running = True
+            print("[ABRP-BLE] BLE server started, advertising as 'OBDLink CX'")
+            return True
+        except Exception as e:
+            # BlueZ can race adapter registration on boot; retry via outer self-heal loop.
+            print(f"[ABRP-BLE] BLE server start failed: {e}")
+            self.running = False
+            self.server = None
+            return False
 
     async def stop(self):
         """Stop the BLE server."""
