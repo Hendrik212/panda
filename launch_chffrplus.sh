@@ -116,6 +116,8 @@ function launch {
 
   # Use venv python so agnos.py, build.py, manager.py all get capnp/zmq/etc
   export PATH="/usr/local/venv/bin:$PATH"
+  # Reserve /dev/ttyHS0 for ABRP BLE hciattach instead of ublox daemons.
+  export DISABLE_UBLOX_ON_TTYHS0=1
 
   # hardware specific init
   if [ -f /AGNOS ]; then

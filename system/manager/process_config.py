@@ -23,6 +23,10 @@ def logging(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and run
 
 def ublox_available() -> bool:
+  # ABRP BLE uses /dev/ttyHS0 for hciattach on this fork.
+  # When set, keep ubloxd/pigeond off to avoid UART contention on onroad transition.
+  if os.getenv("DISABLE_UBLOX_ON_TTYHS0", "").lower() in ("1", "true", "yes", "on"):
+    return False
   return os.path.exists('/dev/ttyHS0') and not os.path.exists('/persist/comma/use-quectel-gps')
 
 def ublox(started: bool, params: Params, CP: car.CarParams) -> bool:
