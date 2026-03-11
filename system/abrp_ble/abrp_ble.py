@@ -419,16 +419,23 @@ class ABRPBLEServer:
         self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
         self._run_cmd(["sudo", "pkill", "bluetoothd"], timeout=2.0)
         await asyncio.sleep(0.5)
-        # Start bundled bluetoothd in background (no-plugin for speed)
-        subprocess.Popen(["sudo", _BLUETOOTHD, "-n", "--noplugin=*"],
+        # Start bundled bluetoothd in background.
+        # --compat enables deprecated HCI socket API (HCIGETDEVLIST ioctl) alongside
+        # the management interface — required on kernels where mgmt reports 0 controllers
+        # despite hci0 being present in sysfs (observed on AGNOS 17+ / kernel 4.9).
+        subprocess.Popen(["sudo", _BLUETOOTHD, "-n", "--compat", "--noplugin=*"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await asyncio.sleep(1.5)  # let it initialize
+        await asyncio.sleep(2.0)  # let it initialize
+
+        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
+        print(f"[ABRP-BLE] btmgmt info (rc={rc}):\n{out}")
 
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "off"], timeout=2.0)
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "le", "on"], timeout=2.0)
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "bredr", "off"], timeout=2.0)
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "connectable", "on"], timeout=2.0)
-        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
+        rc, out = self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
+        print(f"[ABRP-BLE] btmgmt power on (rc={rc}): {out.strip()}")
 
     async def ensure_bt_ready(self, attempts: int = 5) -> bool:
         """Bring up hci0 with a userspace sequence known to work on this platform."""
@@ -455,12 +462,17 @@ class ABRPBLEServer:
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
                 # Start attach in background using bundled hciattach.
+                # Use 'qca' vendor type for Qualcomm WCN3990 (Snapdragon 845 BT) — performs
+                # firmware download and proper init. Falls back to 'any' on second attempt.
+                vendor = "qca" if i == 1 else "any"
+                print(f"[ABRP-BLE] hciattach vendor={vendor}")
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
+                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", vendor, "3000000", "flow"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                await asyncio.sleep(0.5)
+                # qca needs ~3s for firmware download; any needs ~0.5s
+                await asyncio.sleep(3.0 if vendor == "qca" else 0.5)
 
                 if self._hci_up_running():
                     await self._configure_bt()
