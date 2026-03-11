@@ -36,6 +36,11 @@ _BTATTACH = os.path.join(_BIN_DIR, "btattach")
 _BTMGMT = os.path.join(_BIN_DIR, "btmgmt")
 _BLUETOOTHD = os.path.join(_BIN_DIR, "bluetoothd")
 
+# Ensure bundled binaries are executable (git doesn't preserve exec bits for LFS blobs)
+for _b in (_BTATTACH, _BTMGMT, _BLUETOOTHD):
+    if os.path.isfile(_b) and not os.access(_b, os.X_OK):
+        os.chmod(_b, 0o755)
+
 # D-Bus policy needed for bluetoothd to own org.bluez (removed in AGNOS 17+)
 _DBUS_POLICY_PATH = "/etc/dbus-1/system.d/bluetooth.conf"
 _DBUS_POLICY = """<!-- BlueZ D-Bus policy installed by abrp_ble for AGNOS 17+ compatibility -->
