@@ -433,24 +433,10 @@ class ABRPBLEServer:
         except Exception as e:
             return 1, str(e)
 
-    @staticmethod
-    def _hci_up_running() -> bool:
-        # hciconfig removed in AGNOS 17+; check sysfs.
-        # hci0 appears in sysfs after hciattach but before full init.
-        # A fully initialized device will have a non-zero address file.
-        if not os.path.exists("/sys/class/bluetooth/hci0"):
-            return False
-        try:
-            addr = open("/sys/class/bluetooth/hci0/address").read().strip()
-            return addr not in ("", "00:00:00:00:00:00")
-        except Exception:
-            return False
-
-    def _hci_bring_up(self) -> bool:
-        """Issue HCIDEVUP ioctl to complete HCI initialization (replaces `hciconfig hci0 up`)."""
-        rc, out = self._run_cmd(["sudo", sys.executable, _HCI_UP_PY, "0"], timeout=5.0)
-        print(f"[ABRP-BLE] hci_up: rc={rc} {out.strip()}")
-        return rc == 0
+    def _hci_up_running(self) -> bool:
+        """Check if hci0 is registered and accessible via the BT management interface."""
+        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
+        return rc == 0 and "hci0" in out and "Primary controller" in out
 
     async def _configure_bt(self) -> None:
         """Configure hci0 for BLE advertising and start bluetoothd."""
@@ -481,19 +467,9 @@ class ABRPBLEServer:
             await self._configure_bt()
             return True
 
-        # hci0 may exist in sysfs (hciattach already ran) but not be fully initialized.
-        # Try bringing it up without restarting hciattach first.
-        if os.path.exists("/sys/class/bluetooth/hci0"):
-            print("[ABRP-BLE] hci0 exists but not UP; issuing HCIDEVUP...")
-            self._hci_bring_up()
-            await asyncio.sleep(0.5)
-            if self._hci_up_running():
-                await self._configure_bt()
-                return True
-
         print("[ABRP-BLE] Recovering Bluetooth adapter...")
         self.recovering_bt = True
-        # Ensure QCA firmware is in /lib/firmware/qca/ before hciattach qca runs
+        # Ensure QCA firmware is in /lib/firmware/qca/
         _ensure_bt_firmware()
         try:
             for i in range(1, attempts + 1):
@@ -511,18 +487,16 @@ class ABRPBLEServer:
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
-                # Use QCA vendor type: downloads firmware to chip before HCI init.
-                # Without this, the chip can't respond to HCI commands and init times out.
-                # Falls back to 'any' if qca fails (e.g. firmware mismatch).
-                vendor = "qca" if i <= 3 else "any"
-                print(f"[ABRP-BLE] hciattach vendor={vendor}")
+                # 'any' (H4) triggers the kernel's QCA UART driver which auto-detects
+                # the ROME chip and attempts firmware download from /lib/firmware/qca/.
+                # The download may fail but the chip remains accessible via the mgmt
+                # interface — we wait for the kernel init attempt to complete (~12s).
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", vendor, "3000000", "flow"],
+                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                # QCA firmware download takes a few seconds
-                await asyncio.sleep(5.0 if vendor == "qca" else 1.0)
+                await asyncio.sleep(12.0)  # wait for kernel QCA init attempt to complete
 
                 if self._hci_up_running():
                     await self._configure_bt()
