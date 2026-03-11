@@ -122,8 +122,7 @@ procs = [
   PythonProcess("mqttd", "system.mqttd.mqttd", only_offroad),
   PythonProcess("mqttd_status", "system.mqttd.status", only_offroad),
 
-  # ABRP OBD BLE bridge (disabled for now to avoid blocking openpilot startup)
-  PythonProcess("abrp_ble", "system.abrp_ble.abrp_ble", always_run, enabled=False),
+  PythonProcess("abrp_ble", "system.abrp_ble.abrp_ble", always_run),
 ]
 
 managed_processes = {p.name: p for p in procs}
