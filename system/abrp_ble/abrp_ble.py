@@ -21,12 +21,62 @@ and Mode 22 PIDs for Hyundai BMS (7E4).
 """
 
 import asyncio
+import os
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
+
+# Bundled BT tools (hciattach/btmgmt from BlueZ 5.66 Debian 12, glibc 2.31 compatible)
+# These replace system tools removed in AGNOS 17+
+_BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
+_HCIATTACH = os.path.join(_BIN_DIR, "hciattach")
+_BTMGMT = os.path.join(_BIN_DIR, "btmgmt")
+_BLUETOOTHD = os.path.join(_BIN_DIR, "bluetoothd")
+
+# D-Bus policy needed for bluetoothd to own org.bluez (removed in AGNOS 17+)
+_DBUS_POLICY_PATH = "/etc/dbus-1/system.d/bluetooth.conf"
+_DBUS_POLICY = """<!-- BlueZ D-Bus policy installed by abrp_ble for AGNOS 17+ compatibility -->
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="root">
+    <allow own="org.bluez"/>
+    <allow send_destination="org.bluez"/>
+    <allow send_interface="org.bluez.Agent1"/>
+    <allow send_interface="org.bluez.Profile1"/>
+    <allow send_interface="org.bluez.GattCharacteristic1"/>
+    <allow send_interface="org.bluez.GattDescriptor1"/>
+    <allow send_interface="org.bluez.LEAdvertisement1"/>
+    <allow send_interface="org.freedesktop.DBus.ObjectManager"/>
+    <allow send_interface="org.freedesktop.DBus.Properties"/>
+  </policy>
+  <policy context="default">
+    <allow send_destination="org.bluez"/>
+  </policy>
+</busconfig>
+"""
+
+
+def _ensure_dbus_policy() -> None:
+    """Write bluetoothd D-Bus policy if missing (AGNOS 17+ has read-only rootfs)."""
+    if os.path.exists(_DBUS_POLICY_PATH):
+        return
+    try:
+        import subprocess
+        # Remount root rw briefly to write the policy file
+        subprocess.run(["sudo", "mount", "-o", "remount,rw", "/"], check=True, timeout=5)
+        os.makedirs(os.path.dirname(_DBUS_POLICY_PATH), exist_ok=True)
+        with open(_DBUS_POLICY_PATH, "w") as f:
+            f.write(_DBUS_POLICY)
+        subprocess.run(["sudo", "mount", "-o", "remount,ro", "/"], timeout=5)
+        # Reload D-Bus config
+        subprocess.run(["sudo", "systemctl", "reload", "dbus"], timeout=5)
+        print("[ABRP-BLE] Installed bluetoothd D-Bus policy")
+    except Exception as e:
+        print(f"[ABRP-BLE] Failed to install D-Bus policy: {e}")
 
 # bless is installed to /data/bless_packages (system venv is read-only)
 if "/data/bless_packages" not in sys.path:
@@ -356,12 +406,34 @@ class ABRPBLEServer:
 
     @staticmethod
     def _hci_up_running() -> bool:
-        code, out = ABRPBLEServer._run_cmd(["hciconfig", "hci0"], timeout=2.0)
-        return code == 0 and ("UP RUNNING" in out)
+        # hciconfig removed in AGNOS 17+; check sysfs presence of hci0 device
+        return os.path.exists("/sys/class/bluetooth/hci0")
+
+    async def _configure_bt(self) -> None:
+        """Start bluetoothd and configure hci0 for BLE advertising."""
+        # Ensure D-Bus policy allows bluetoothd to own org.bluez (AGNOS 17+ compat)
+        _ensure_dbus_policy()
+
+        # Stop any system bluetooth service; start our bundled bluetoothd instead
+        self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
+        self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
+        self._run_cmd(["sudo", "pkill", "bluetoothd"], timeout=2.0)
+        await asyncio.sleep(0.5)
+        # Start bundled bluetoothd in background (no-plugin for speed)
+        subprocess.Popen(["sudo", _BLUETOOTHD, "-n", "--noplugin=*"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await asyncio.sleep(1.5)  # let it initialize
+
+        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "off"], timeout=2.0)
+        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "le", "on"], timeout=2.0)
+        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "bredr", "off"], timeout=2.0)
+        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "connectable", "on"], timeout=2.0)
+        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
 
     async def ensure_bt_ready(self, attempts: int = 5) -> bool:
         """Bring up hci0 with a userspace sequence known to work on this platform."""
         if self._hci_up_running():
+            await self._configure_bt()
             return True
 
         print("[ABRP-BLE] Recovering Bluetooth adapter...")
@@ -381,25 +453,17 @@ class ABRPBLEServer:
 
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
-                self._run_cmd(["sudo", "hciconfig", "hci0", "down"], timeout=1.5)
 
-                # Start attach in background.
+                # Start attach in background using bundled hciattach.
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", "hciattach", "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
+                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                await asyncio.sleep(0.3)
-                self._run_cmd(["sudo", "hciconfig", "hci0", "up"], timeout=2.0)
+                await asyncio.sleep(0.5)
 
                 if self._hci_up_running():
-                    self._run_cmd(["sudo", "systemctl", "unmask", "--runtime", "bluetooth"], timeout=3.0)
-                    self._run_cmd(["sudo", "systemctl", "start", "bluetooth"], timeout=3.0)
-                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "power", "off"], timeout=2.0)
-                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "le", "on"], timeout=2.0)
-                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "bredr", "off"], timeout=2.0)
-                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "connectable", "on"], timeout=2.0)
-                    self._run_cmd(["sudo", "btmgmt", "-i", "hci0", "power", "on"], timeout=2.0)
+                    await self._configure_bt()
                     print("[ABRP-BLE] Bluetooth adapter is UP RUNNING")
                     return True
                 else:
