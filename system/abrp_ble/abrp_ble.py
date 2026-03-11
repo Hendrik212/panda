@@ -29,12 +29,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Bundled BT tools (hciattach/btmgmt from BlueZ 5.66 Debian 12, glibc 2.31 compatible)
+# Bundled BT tools (hciattach/btmgmt/bluetoothd from BlueZ 5.66 Debian 12, glibc 2.31 compatible)
 # These replace system tools removed in AGNOS 17+
 _BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
 _HCIATTACH = os.path.join(_BIN_DIR, "hciattach")
 _BTMGMT = os.path.join(_BIN_DIR, "btmgmt")
 _BLUETOOTHD = os.path.join(_BIN_DIR, "bluetoothd")
+# hci_up.py replaces `hciconfig hciN up` (removed in AGNOS 17+):
+# issues HCIDEVUP ioctl to complete HCI initialization after hciattach
+_HCI_UP_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hci_up.py")
 
 # D-Bus policy needed for bluetoothd to own org.bluez (removed in AGNOS 17+)
 _DBUS_POLICY_PATH = "/etc/dbus-1/system.d/bluetooth.conf"
@@ -406,29 +409,38 @@ class ABRPBLEServer:
 
     @staticmethod
     def _hci_up_running() -> bool:
-        # hciconfig removed in AGNOS 17+; check sysfs presence of hci0 device
-        return os.path.exists("/sys/class/bluetooth/hci0")
+        # hciconfig removed in AGNOS 17+; check sysfs.
+        # hci0 appears in sysfs after hciattach but before full init.
+        # A fully initialized device will have a non-zero address file.
+        if not os.path.exists("/sys/class/bluetooth/hci0"):
+            return False
+        try:
+            addr = open("/sys/class/bluetooth/hci0/address").read().strip()
+            return addr not in ("", "00:00:00:00:00:00")
+        except Exception:
+            return False
+
+    def _hci_bring_up(self) -> bool:
+        """Issue HCIDEVUP ioctl to complete HCI initialization (replaces `hciconfig hci0 up`)."""
+        rc, out = self._run_cmd(["sudo", sys.executable, _HCI_UP_PY, "0"], timeout=5.0)
+        print(f"[ABRP-BLE] hci_up: rc={rc} {out.strip()}")
+        return rc == 0
 
     async def _configure_bt(self) -> None:
-        """Start bluetoothd and configure hci0 for BLE advertising."""
+        """Configure hci0 for BLE advertising and start bluetoothd."""
         # Ensure D-Bus policy allows bluetoothd to own org.bluez (AGNOS 17+ compat)
         _ensure_dbus_policy()
 
-        # Stop any system bluetooth service; start our bundled bluetoothd instead
+        # Stop any system bluetooth service; we manage our own bluetoothd
         self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
         self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
         self._run_cmd(["sudo", "pkill", "bluetoothd"], timeout=2.0)
-        await asyncio.sleep(0.5)
-        # Start bundled bluetoothd in background.
-        # --compat enables deprecated HCI socket API (HCIGETDEVLIST ioctl) alongside
-        # the management interface — required on kernels where mgmt reports 0 controllers
-        # despite hci0 being present in sysfs (observed on AGNOS 17+ / kernel 4.9).
-        subprocess.Popen(["sudo", _BLUETOOTHD, "-n", "--compat", "--noplugin=*"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await asyncio.sleep(2.0)  # let it initialize
+        await asyncio.sleep(0.3)
 
-        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
-        print(f"[ABRP-BLE] btmgmt info (rc={rc}):\n{out}")
+        # Start bundled bluetoothd — it discovers hci0 via the mgmt interface
+        subprocess.Popen(["sudo", _BLUETOOTHD, "-n", "--noplugin=*"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await asyncio.sleep(1.5)  # let it register with D-Bus
 
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "off"], timeout=2.0)
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "le", "on"], timeout=2.0)
@@ -442,6 +454,16 @@ class ABRPBLEServer:
         if self._hci_up_running():
             await self._configure_bt()
             return True
+
+        # hci0 may exist in sysfs (hciattach already ran) but not be fully initialized.
+        # Try bringing it up without restarting hciattach first.
+        if os.path.exists("/sys/class/bluetooth/hci0"):
+            print("[ABRP-BLE] hci0 exists but not UP; issuing HCIDEVUP...")
+            self._hci_bring_up()
+            await asyncio.sleep(0.5)
+            if self._hci_up_running():
+                await self._configure_bt()
+                return True
 
         print("[ABRP-BLE] Recovering Bluetooth adapter...")
         self.recovering_bt = True
@@ -462,17 +484,18 @@ class ABRPBLEServer:
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
                 # Start attach in background using bundled hciattach.
-                # Use 'qca' vendor type for Qualcomm WCN3990 (Snapdragon 845 BT) — performs
-                # firmware download and proper init. Falls back to 'any' on second attempt.
-                vendor = "qca" if i == 1 else "any"
-                print(f"[ABRP-BLE] hciattach vendor={vendor}")
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", vendor, "3000000", "flow"],
+                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                # qca needs ~3s for firmware download; any needs ~0.5s
-                await asyncio.sleep(3.0 if vendor == "qca" else 0.5)
+                await asyncio.sleep(0.3)
+
+                # Issue HCIDEVUP ioctl to complete HCI initialization (replaces hciconfig up).
+                # This sends HCI_RESET to the chip, clears HCI_SETUP flag, and makes hci0
+                # visible to the management interface so bluetoothd can discover it.
+                self._hci_bring_up()
+                await asyncio.sleep(0.5)
 
                 if self._hci_up_running():
                     await self._configure_bt()
