@@ -16,7 +16,7 @@ export VECLIB_MAXIMUM_THREADS=1
 export QCOM_PRIORITY=12
 
 if [ -z "$AGNOS_VERSION" ]; then
-  export AGNOS_VERSION="17"
+  export AGNOS_VERSION="17.2"
 fi
 
 # Bump this when boot partition content should be auto-applied on reboot.
