@@ -39,6 +39,11 @@ _BLUETOOTHD = os.path.join(_BIN_DIR, "bluetoothd")
 # issues HCIDEVUP ioctl to complete HCI initialization after hciattach
 _HCI_UP_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hci_up.py")
 
+# Firmware files for QCA BT chip (crbtfw21.tlv + crnv21.bin)
+# hciattach qca looks in /lib/firmware/qca/; files are bundled here
+_FIRMWARE_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "firmware")
+_FIRMWARE_DST = "/lib/firmware/qca"
+
 # D-Bus policy needed for bluetoothd to own org.bluez (removed in AGNOS 17+)
 _DBUS_POLICY_PATH = "/etc/dbus-1/system.d/bluetooth.conf"
 _DBUS_POLICY = """<!-- BlueZ D-Bus policy installed by abrp_ble for AGNOS 17+ compatibility -->
@@ -61,6 +66,27 @@ _DBUS_POLICY = """<!-- BlueZ D-Bus policy installed by abrp_ble for AGNOS 17+ co
   </policy>
 </busconfig>
 """
+
+
+def _ensure_bt_firmware() -> None:
+    """Copy QCA BT firmware to /lib/firmware/qca/ so hciattach qca can find it."""
+    import glob
+    import shutil
+    if os.path.isdir(_FIRMWARE_DST) and os.listdir(_FIRMWARE_DST):
+        return
+    src_files = glob.glob(os.path.join(_FIRMWARE_SRC, "*"))
+    if not src_files:
+        print("[ABRP-BLE] No firmware files found in bundle, skipping firmware install")
+        return
+    try:
+        subprocess.run(["sudo", "mount", "-o", "remount,rw", "/"], check=True, timeout=5)
+        os.makedirs(_FIRMWARE_DST, exist_ok=True)
+        for f in src_files:
+            shutil.copy(f, _FIRMWARE_DST)
+        subprocess.run(["sudo", "mount", "-o", "remount,ro", "/"], timeout=5)
+        print(f"[ABRP-BLE] Installed BT firmware to {_FIRMWARE_DST}")
+    except Exception as e:
+        print(f"[ABRP-BLE] Failed to install BT firmware: {e}")
 
 
 def _ensure_dbus_policy() -> None:
@@ -428,7 +454,7 @@ class ABRPBLEServer:
 
     async def _configure_bt(self) -> None:
         """Configure hci0 for BLE advertising and start bluetoothd."""
-        # Ensure D-Bus policy allows bluetoothd to own org.bluez (AGNOS 17+ compat)
+        _ensure_bt_firmware()
         _ensure_dbus_policy()
 
         # Stop any system bluetooth service; we manage our own bluetoothd
@@ -467,6 +493,8 @@ class ABRPBLEServer:
 
         print("[ABRP-BLE] Recovering Bluetooth adapter...")
         self.recovering_bt = True
+        # Ensure QCA firmware is in /lib/firmware/qca/ before hciattach qca runs
+        _ensure_bt_firmware()
         try:
             for i in range(1, attempts + 1):
                 print(f"[ABRP-BLE] BT recovery attempt {i}/{attempts}")
@@ -483,19 +511,18 @@ class ABRPBLEServer:
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
-                # Start attach in background using bundled hciattach.
+                # Use QCA vendor type: downloads firmware to chip before HCI init.
+                # Without this, the chip can't respond to HCI commands and init times out.
+                # Falls back to 'any' if qca fails (e.g. firmware mismatch).
+                vendor = "qca" if i <= 3 else "any"
+                print(f"[ABRP-BLE] hciattach vendor={vendor}")
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
+                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", vendor, "3000000", "flow"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                await asyncio.sleep(0.3)
-
-                # Issue HCIDEVUP ioctl to complete HCI initialization (replaces hciconfig up).
-                # This sends HCI_RESET to the chip, clears HCI_SETUP flag, and makes hci0
-                # visible to the management interface so bluetoothd can discover it.
-                self._hci_bring_up()
-                await asyncio.sleep(0.5)
+                # QCA firmware download takes a few seconds
+                await asyncio.sleep(5.0 if vendor == "qca" else 1.0)
 
                 if self._hci_up_running():
                     await self._configure_bt()
