@@ -32,17 +32,9 @@ from typing import Optional
 # Bundled BT tools (hciattach/btmgmt/bluetoothd from BlueZ 5.66 Debian 12, glibc 2.31 compatible)
 # These replace system tools removed in AGNOS 17+
 _BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
-_HCIATTACH = os.path.join(_BIN_DIR, "hciattach")
+_BTATTACH = os.path.join(_BIN_DIR, "btattach")
 _BTMGMT = os.path.join(_BIN_DIR, "btmgmt")
 _BLUETOOTHD = os.path.join(_BIN_DIR, "bluetoothd")
-# hci_up.py replaces `hciconfig hciN up` (removed in AGNOS 17+):
-# issues HCIDEVUP ioctl to complete HCI initialization after hciattach
-_HCI_UP_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hci_up.py")
-
-# Firmware files for QCA BT chip (crbtfw21.tlv + crnv21.bin)
-# hciattach qca looks in /lib/firmware/qca/; files are bundled here
-_FIRMWARE_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "firmware")
-_FIRMWARE_DST = "/lib/firmware/qca"
 
 # D-Bus policy needed for bluetoothd to own org.bluez (removed in AGNOS 17+)
 _DBUS_POLICY_PATH = "/etc/dbus-1/system.d/bluetooth.conf"
@@ -67,26 +59,6 @@ _DBUS_POLICY = """<!-- BlueZ D-Bus policy installed by abrp_ble for AGNOS 17+ co
 </busconfig>
 """
 
-
-def _ensure_bt_firmware() -> None:
-    """Copy QCA BT firmware to /lib/firmware/qca/ so hciattach qca can find it."""
-    import glob
-    import shutil
-    if os.path.isdir(_FIRMWARE_DST) and os.listdir(_FIRMWARE_DST):
-        return
-    src_files = glob.glob(os.path.join(_FIRMWARE_SRC, "*"))
-    if not src_files:
-        print("[ABRP-BLE] No firmware files found in bundle, skipping firmware install")
-        return
-    try:
-        subprocess.run(["sudo", "mount", "-o", "remount,rw", "/"], check=True, timeout=5)
-        os.makedirs(_FIRMWARE_DST, exist_ok=True)
-        for f in src_files:
-            shutil.copy(f, _FIRMWARE_DST)
-        subprocess.run(["sudo", "mount", "-o", "remount,ro", "/"], timeout=5)
-        print(f"[ABRP-BLE] Installed BT firmware to {_FIRMWARE_DST}")
-    except Exception as e:
-        print(f"[ABRP-BLE] Failed to install BT firmware: {e}")
 
 
 def _ensure_dbus_policy() -> None:
@@ -440,7 +412,6 @@ class ABRPBLEServer:
 
     async def _configure_bt(self) -> None:
         """Configure hci0 for BLE advertising and start bluetoothd."""
-        _ensure_bt_firmware()
         _ensure_dbus_policy()
 
         # Stop any system bluetooth service; we manage our own bluetoothd
@@ -461,7 +432,7 @@ class ABRPBLEServer:
         rc, out = self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
         print(f"[ABRP-BLE] btmgmt power on (rc={rc}): {out.strip()}")
 
-    async def ensure_bt_ready(self, attempts: int = 5) -> bool:
+    async def ensure_bt_ready(self, attempts: int = 3) -> bool:
         """Bring up hci0 with a userspace sequence known to work on this platform."""
         if self._hci_up_running():
             await self._configure_bt()
@@ -469,12 +440,10 @@ class ABRPBLEServer:
 
         print("[ABRP-BLE] Recovering Bluetooth adapter...")
         self.recovering_bt = True
-        # Ensure QCA firmware is in /lib/firmware/qca/
-        _ensure_bt_firmware()
         try:
             for i in range(1, attempts + 1):
                 print(f"[ABRP-BLE] BT recovery attempt {i}/{attempts}")
-                self._run_cmd(["sudo", "pkill", "hciattach"], timeout=1.0)
+                self._run_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
                 if self.attach_proc is not None:
                     try:
                         self.attach_proc.terminate()
@@ -482,28 +451,27 @@ class ABRPBLEServer:
                     except Exception:
                         pass
                     self.attach_proc = None
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0)
 
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
-                # 'any' (H4) triggers the kernel's QCA UART driver which auto-detects
-                # the ROME chip and attempts firmware download from /lib/firmware/qca/.
-                # The download may fail but the chip remains accessible via the mgmt
-                # interface — we wait for the kernel init attempt to complete (~12s).
+                # btattach sets the QCA UART line discipline; the kernel's hci_qca driver
+                # runs setup (firmware download may fail but device still registers).
+                # btattach stays running to hold the UART line discipline open.
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", _HCIATTACH, "-s", "115200", "/dev/ttyHS0", "any", "3000000", "flow"],
+                    ["sudo", _BTATTACH, "-B", "/dev/ttyHS0", "-P", "qca", "-S", "3000000"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                await asyncio.sleep(12.0)  # wait for kernel QCA init attempt to complete
+                await asyncio.sleep(5.0)  # wait for kernel QCA setup to complete
 
                 if self._hci_up_running():
                     await self._configure_bt()
                     print("[ABRP-BLE] Bluetooth adapter is UP RUNNING")
                     return True
                 else:
-                    self._run_cmd(["sudo", "pkill", "hciattach"], timeout=1.0)
+                    self._run_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
                     if self.attach_proc is not None:
                         try:
                             self.attach_proc.terminate()
@@ -511,6 +479,7 @@ class ABRPBLEServer:
                         except Exception:
                             pass
                         self.attach_proc = None
+                    await asyncio.sleep(3.0)  # pause before retry
 
             print("[ABRP-BLE] BT recovery failed after retries")
             return False
