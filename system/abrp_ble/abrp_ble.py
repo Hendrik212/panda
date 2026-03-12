@@ -411,9 +411,8 @@ class ABRPBLEServer:
             return 1, str(e)
 
     def _hci_up_running(self) -> bool:
-        """Check if hci0 is registered and accessible via the BT management interface."""
-        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
-        return rc == 0 and "hci0" in out and "Primary controller" in out
+        """Check if hci0 is registered and accessible."""
+        return os.path.exists("/sys/class/bluetooth/hci0")
 
     async def _configure_bt(self) -> None:
         """Configure hci0 for BLE advertising and start bluetoothd."""
@@ -437,40 +436,54 @@ class ABRPBLEServer:
         rc, out = self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
         print(f"[ABRP-BLE] btmgmt power on (rc={rc}): {out.strip()}")
 
-    def _setup_bt_firmware(self) -> None:
-        """Ensure QCA ROME firmware is at a path the kernel firmware loader can find.
+    def _hci_reset_chip(self) -> bool:
+        """Send HCI_Reset directly to the WCN3990 chip over /dev/ttyHS0.
 
-        On AGNOS 17+, the firmware_class.path is set to /firmware/image at boot (vfat,
-        read-only, no QCA BT files). The fallback paths include /lib/firmware. We mount
-        a tmpfs over /lib/firmware/qca/ and copy the correct files there so the kernel's
-        hci_qca driver can find them during btattach.
+        The chip's QCA EDL bootloader responds to a standard HCI_Reset command
+        by resetting into HCI ROM mode, which allows plain H4 HCI framing to work.
+        Returns True if the chip acknowledged the reset.
         """
-        fw_src = "/data/firmware/qca"
-        fw_dst = "/lib/firmware/qca"
-        needed = ["rampatch_02140201.bin", "nvm_02140201.bin"]
-
-        # Check if already set up
-        if all(os.path.isfile(os.path.join(fw_dst, f)) for f in needed):
-            return
-
+        import select as _select
         try:
-            self._run_cmd(["sudo", "mkdir", "-p", fw_dst], timeout=3.0)
-            # Mount tmpfs to make the directory writable (root fs is read-only)
-            rc, _ = self._run_cmd(["sudo", "mount", "-t", "tmpfs", "tmpfs", fw_dst], timeout=5.0)
-            if rc != 0:
-                print(f"[ABRP-BLE] Warning: could not mount tmpfs on {fw_dst}")
-                return
-            for fname in needed:
-                src = os.path.join(fw_src, fname)
-                dst = os.path.join(fw_dst, fname)
-                if os.path.isfile(src):
-                    self._run_cmd(["sudo", "cp", src, dst], timeout=3.0)
-            print(f"[ABRP-BLE] BT firmware staged at {fw_dst}")
+            subprocess.run(
+                ["stty", "-F", "/dev/ttyHS0", "3000000", "raw", "-echo"],
+                check=False, timeout=2.0,
+            )
+            fd = os.open("/dev/ttyHS0", os.O_RDWR | os.O_NOCTTY)
+            try:
+                # Drain any stale data
+                while True:
+                    r, _, _ = _select.select([fd], [], [], 0.05)
+                    if not r:
+                        break
+                    os.read(fd, 64)
+                # HCI_Reset: H4 command(0x01) + opcode 0x0C03 (LE) + param_len 0x00
+                os.write(fd, bytes([0x01, 0x03, 0x0C, 0x00]))
+                resp = bytearray()
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    r, _, _ = _select.select([fd], [], [], 0.1)
+                    if r:
+                        resp.extend(os.read(fd, 10))
+                    elif len(resp) >= 7:
+                        break
+                resp_hex = bytes(resp).hex()
+                print(f"[ABRP-BLE] HCI chip reset response: {resp_hex}")
+                # Success response: 04 0e 04 01 03 0c 00
+                return b"\x04\x0e\x04\x01\x03\x0c\x00" in bytes(resp)
+            finally:
+                os.close(fd)
         except Exception as e:
-            print(f"[ABRP-BLE] Warning: firmware setup failed: {e}")
+            print(f"[ABRP-BLE] HCI chip reset error: {e}")
+            return False
 
-    async def ensure_bt_ready(self, attempts: int = 3) -> bool:
-        """Bring up hci0 with a userspace sequence known to work on this platform."""
+    async def ensure_bt_ready(self, attempts: int = 5) -> bool:
+        """Bring up hci0 using HCI_Reset + H4 attach (WCN3990 ROM mode).
+
+        The WCN3990 chip starts in QCA EDL bootloader mode. Sending a plain
+        HCI_Reset command causes it to exit EDL and enter HCI ROM mode, after
+        which a standard H4 btattach brings up hci0 without firmware loading.
+        """
         if self._hci_up_running():
             await self._configure_bt()
             return True
@@ -478,10 +491,6 @@ class ABRPBLEServer:
         print("[ABRP-BLE] Recovering Bluetooth adapter...")
         self.recovering_bt = True
         try:
-            # Ensure QCA firmware is in a location the kernel firmware loader can access.
-            # Must be done before btattach triggers the kernel's hci_qca firmware download.
-            self._setup_bt_firmware()
-
             for i in range(1, attempts + 1):
                 print(f"[ABRP-BLE] BT recovery attempt {i}/{attempts}")
                 self._run_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
@@ -492,20 +501,26 @@ class ABRPBLEServer:
                     except Exception:
                         pass
                     self.attach_proc = None
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.0)
 
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
-                # btattach sets the QCA UART line discipline; the kernel's hci_qca driver
-                # runs setup including firmware download (rampatch + nvm via 0xfc00 commands).
-                # btattach stays running to hold the UART line discipline open.
+                # Send HCI_Reset to chip to exit QCA EDL bootloader and enter HCI ROM mode.
+                # The chip's EDL bootloader responds to HCI_Reset with a command-complete event.
+                ok = self._hci_reset_chip()
+                if not ok:
+                    print(f"[ABRP-BLE] HCI reset attempt {i} got no response, retrying...")
+                    await asyncio.sleep(2.0)
+                    continue
+
+                # Attach with H4 (plain HCI framing) — no firmware download, chip is in ROM mode.
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", _BTATTACH, "-B", "/dev/ttyHS0", "-P", "qca"],
+                    ["sudo", _BTATTACH, "-B", "/dev/ttyHS0", "-P", "h4"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                await asyncio.sleep(20.0)  # wait for kernel QCA setup + firmware download
+                await asyncio.sleep(5.0)  # wait for H4 HCI init (faster than QCA firmware load)
 
                 if self._hci_up_running():
                     await self._configure_bt()
@@ -520,7 +535,7 @@ class ABRPBLEServer:
                         except Exception:
                             pass
                         self.attach_proc = None
-                    await asyncio.sleep(3.0)  # pause before retry
+                    await asyncio.sleep(2.0)
 
             print("[ABRP-BLE] BT recovery failed after retries")
             return False
