@@ -418,8 +418,10 @@ class ABRPBLEServer:
         reference counting on the btattach fd — it is a false positive. btmgmt index list
         is authoritative: it reflects actual hci_register_dev / hci_unregister_dev state.
         """
-        rc, out = self._run_cmd(["sudo", _BTMGMT, "index"], timeout=3.0)
-        registered = "hci0" in out or (rc == 0 and "Index list" in out and "0 items" not in out)
+        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
+        # "Index list with 0 items" → nothing registered
+        # "Index list with N items" (N > 0) → at least one adapter present
+        registered = "Index list" in out and "0 items" not in out
         print(f"[ABRP-BLE] _hci_up_running: rc={rc} out={out.strip()!r} -> {registered}")
         return registered
 
@@ -445,69 +447,13 @@ class ABRPBLEServer:
         rc, out = self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
         print(f"[ABRP-BLE] btmgmt power on (rc={rc}): {out.strip()}")
 
-    def _hci_reset_chip(self) -> int:
-        """Send HCI_Reset directly to the WCN3990 chip over /dev/ttyHS0.
-
-        The chip's QCA EDL bootloader responds to a standard HCI_Reset command
-        by resetting into HCI ROM mode. Returns the open fd (caller must close it)
-        so the chip stays in HCI ROM mode while btattach opens its own fd. Returns -1
-        on failure.
-
-        Keeping the fd open prevents the chip from reverting to EDL mode between
-        this reset and btattach attaching the N_HCI line discipline.
-        """
-        import select as _select
-        fd = -1
-        try:
-            subprocess.run(
-                ["stty", "-F", "/dev/ttyHS0", "3000000", "raw", "-echo"],
-                check=False, timeout=2.0,
-            )
-            fd = os.open("/dev/ttyHS0", os.O_RDWR | os.O_NOCTTY)
-            # Drain any stale data
-            while True:
-                r, _, _ = _select.select([fd], [], [], 0.05)
-                if not r:
-                    break
-                os.read(fd, 64)
-            # HCI_Reset: H4 command(0x01) + opcode 0x0C03 + param_len 0x00
-            os.write(fd, bytes([0x01, 0x03, 0x0C, 0x00]))
-            resp = bytearray()
-            deadline = time.time() + 2.0
-            while time.time() < deadline:
-                r, _, _ = _select.select([fd], [], [], 0.1)
-                if r:
-                    resp.extend(os.read(fd, 10))
-                if len(resp) >= 7:
-                    break
-            resp_hex = bytes(resp).hex()
-            print(f"[ABRP-BLE] HCI chip reset response: {resp_hex}")
-            if b"\x04\x0e\x04\x01\x03\x0c\x00" not in bytes(resp):
-                os.close(fd)
-                return -1
-            # Drain any additional bytes the chip may send after entering HCI ROM mode
-            while True:
-                r, _, _ = _select.select([fd], [], [], 0.3)
-                if not r:
-                    break
-                os.read(fd, 64)
-            # Return fd open — caller keeps it open while btattach attaches
-            return fd
-        except Exception as e:
-            print(f"[ABRP-BLE] HCI chip reset error: {e}")
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-            return -1
-
     async def ensure_bt_ready(self, attempts: int = 5) -> bool:
-        """Bring up hci0 using HCI_Reset + H4 attach (WCN3990 ROM mode).
+        """Bring up hci0 via QCA btattach with ROM firmware fallback.
 
-        The WCN3990 chip starts in QCA EDL bootloader mode. Sending a plain
-        HCI_Reset command causes it to exit EDL and enter HCI ROM mode, after
-        which a standard H4 btattach brings up hci0 without firmware loading.
+        Uses the standard QCA btattach protocol. The kernel's hci_qca.c has been
+        patched to fall through to ROM mode when firmware download fails (TLV
+        timeout on WCN3990), so qca_setup() returns 0, hci_dev_do_open() succeeds,
+        and mgmt_index_added() fires making the device visible to btmgmt.
         """
         if self._hci_up_running():
             await self._configure_bt()
@@ -531,29 +477,17 @@ class ABRPBLEServer:
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
-                # Send HCI_Reset to chip to exit QCA EDL bootloader and enter HCI ROM mode.
-                # Returns the open fd so the chip stays in HCI ROM mode during btattach startup.
-                chip_fd = self._hci_reset_chip()
-                if chip_fd < 0:
-                    print(f"[ABRP-BLE] HCI reset attempt {i} got no response, retrying...")
-                    await asyncio.sleep(2.0)
-                    continue
-
-                # Attach with H4 (plain HCI framing) — no firmware download, chip is in ROM mode.
-                # Keep chip_fd open so the chip doesn't revert to EDL while btattach opens its fd.
+                # QCA btattach: kernel tries firmware download (TLV), which times out on
+                # WCN3990 (~8s). With the hci_qca.c ROM-fallback patch, qca_setup() then
+                # returns 0, hci_dev_do_open() runs standard HCI init, chip responds (ROM
+                # mode), mgmt_index_added() fires, btmgmt sees hci0.
                 self.attach_proc = subprocess.Popen(
-                    ["sudo", _BTATTACH, "-B", "/dev/ttyHS0", "-P", "h4"],
+                    ["sudo", _BTATTACH, "-B", "/dev/ttyHS0", "-P", "qca"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                # Give btattach time to open ttyHS0 and set N_HCI, then release our hold
-                await asyncio.sleep(2.0)
-                try:
-                    os.close(chip_fd)
-                except Exception:
-                    pass
-
-                await asyncio.sleep(3.0)  # wait for hci_power_on / HCI init to complete
+                # Wait for QCA setup to complete: firmware attempt (~8-10s) + HCI init (~2s)
+                await asyncio.sleep(20.0)
 
                 if self._hci_up_running():
                     await self._configure_bt()
