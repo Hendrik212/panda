@@ -508,8 +508,14 @@ class ABRPBLEServer:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                # Wait for QCA setup to complete: firmware attempt (~8-10s) + HCI init (~2s)
-                await asyncio.sleep(20.0)
+                # Poll for hci0 registration instead of fixed sleep.
+                # ROM fallback path: TLV times out (~13s) then HCI init (~2s) = ~15s total.
+                # Firmware load path: ~3s. Poll up to 35s to cover both.
+                for _ in range(35):
+                    await asyncio.sleep(1.0)
+                    if os.path.exists("/sys/class/bluetooth/hci0"):
+                        await asyncio.sleep(2.0)  # let mgmt_index_added() fire
+                        break
 
                 if self._hci_up_running():
                     await self._configure_bt()
