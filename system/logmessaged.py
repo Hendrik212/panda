@@ -29,7 +29,8 @@ def main() -> NoReturn:
       if level >= log_level:
         log_handler.emit(record)
 
-      if len(record) > 2*1024*1024:
+      # logMessage queue is 250KB; msgq requires 3*msg_size <= queue_size so max ~83KB
+      if len(record) > 80*1024:
         print("WARNING: log too big to publish", len(record))
         print(record[:100])
         continue
