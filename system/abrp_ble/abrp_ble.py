@@ -425,6 +425,15 @@ class ABRPBLEServer:
         print(f"[ABRP-BLE] _hci_up_running: rc={rc} out={out.strip()!r} -> {registered}")
         return registered
 
+    def _is_advertising(self) -> bool:
+        """Check if hci0 is actively advertising (advertising in current settings)."""
+        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
+        # btmgmt info shows "current settings: ... advertising ..." when active
+        for line in out.splitlines():
+            if "current settings:" in line:
+                return "advertising" in line
+        return False
+
     async def _configure_bt(self) -> None:
         """Configure hci0 for BLE advertising and start bluetoothd."""
         _ensure_dbus_policy()
@@ -737,10 +746,15 @@ async def async_main():
             # Self-heal BT/advertising if adapter dropped or start failed.
             if not server.running and not server.recovering_bt:
                 await server.start()
-            elif server.running and not server._hci_up_running() and not server.recovering_bt:
-                print("[ABRP-BLE] hci0 dropped, restarting BLE server")
-                await server.stop()
-                await server.start()
+            elif server.running and not server.recovering_bt:
+                if not server._hci_up_running():
+                    print("[ABRP-BLE] hci0 dropped, restarting BLE server")
+                    await server.stop()
+                    await server.start()
+                elif not server._is_advertising():
+                    print("[ABRP-BLE] advertising stopped, restarting BLE server")
+                    await server.stop()
+                    await server.start()
 
             # Periodic status log
             data = ev_data.get_snapshot()
