@@ -599,6 +599,12 @@ class ABRPBLEServer:
 
             # Start advertising
             await self.server.start()
+
+            # bless registers the GATT advertisement instance but BlueZ sometimes
+            # doesn't flip the mgmt-level 'advertising' flag. Force it on explicitly.
+            await asyncio.sleep(0.5)
+            self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "advertising", "on"], timeout=2.0)
+
             self.running = True
             print("[ABRP-BLE] BLE server started, advertising as 'OBDLink CX'")
             return True
