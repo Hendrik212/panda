@@ -486,6 +486,19 @@ class ABRPBLEServer:
                 self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
                 self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
+                # Point firmware_class at /data/firmware where QCA blobs live.
+                # The kernel cmdline sets firmware_class.path=/data/firmware but init
+                # overrides it to /firmware/image (read-only vfat, no QCA files).
+                try:
+                    with open("/sys/module/firmware_class/parameters/path", "wb") as _fp:
+                        _fp.write(b"/data/firmware")
+                except OSError:
+                    self._run_cmd(
+                        ["sudo", "sh", "-c",
+                         "echo -n /data/firmware > /sys/module/firmware_class/parameters/path"],
+                        timeout=2.0,
+                    )
+
                 # QCA btattach: kernel tries firmware download (TLV), which times out on
                 # WCN3990 (~8s). With the hci_qca.c ROM-fallback patch, qca_setup() then
                 # returns 0, hci_dev_do_open() runs standard HCI init, chip responds (ROM
