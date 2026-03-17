@@ -450,6 +450,7 @@ class ABRPBLEServer:
         await asyncio.sleep(1.5)  # let it register with D-Bus
 
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "off"], timeout=2.0)
+        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "name", "OBDLink CX"], timeout=2.0)
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "le", "on"], timeout=2.0)
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "bredr", "off"], timeout=2.0)
         self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "connectable", "on"], timeout=2.0)
