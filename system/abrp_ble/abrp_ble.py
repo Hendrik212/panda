@@ -412,23 +412,37 @@ class ABRPBLEServer:
         except Exception as e:
             return 1, str(e)
 
-    def _hci_up_running(self) -> bool:
+    @staticmethod
+    async def _arun_cmd(cmd: list[str], timeout: float = 3.0) -> tuple[int, str]:
+        """Async version of _run_cmd — does not block the event loop."""
+        try:
+            p = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out_bytes, _ = await asyncio.wait_for(p.communicate(), timeout=timeout)
+            return p.returncode or 0, out_bytes.decode(errors="replace")
+        except Exception as e:
+            return 1, str(e)
+
+    async def _hci_up_running(self) -> bool:
         """Check if hci0 is registered in the HCI management interface (not just sysfs).
 
         sysfs /sys/class/bluetooth/hci0 persists even after hci_unregister_dev due to
         reference counting on the btattach fd — it is a false positive. btmgmt index list
         is authoritative: it reflects actual hci_register_dev / hci_unregister_dev state.
         """
-        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
+        rc, out = await self._arun_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
         # "Index list with 0 items" → nothing registered
         # "Index list with N items" (N > 0) → at least one adapter present
         registered = "Index list" in out and "0 items" not in out
         print(f"[ABRP-BLE] _hci_up_running: rc={rc} out={out.strip()!r} -> {registered}")
         return registered
 
-    def _is_advertising(self) -> bool:
+    async def _is_advertising(self) -> bool:
         """Check if hci0 is actively advertising (advertising in current settings)."""
-        rc, out = self._run_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
+        rc, out = await self._arun_cmd(["sudo", _BTMGMT, "info"], timeout=3.0)
         # btmgmt info shows "current settings: ... advertising ..." when active
         for line in out.splitlines():
             if "current settings:" in line:
@@ -440,9 +454,9 @@ class ABRPBLEServer:
         _ensure_dbus_policy()
 
         # Stop any system bluetooth service; we manage our own bluetoothd
-        self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
-        self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
-        self._run_cmd(["sudo", "pkill", "bluetoothd"], timeout=2.0)
+        await self._arun_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
+        await self._arun_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
+        await self._arun_cmd(["sudo", "pkill", "bluetoothd"], timeout=2.0)
         await asyncio.sleep(0.3)
 
         # Start bundled bluetoothd — it discovers hci0 via the mgmt interface
@@ -450,12 +464,12 @@ class ABRPBLEServer:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         await asyncio.sleep(1.5)  # let it register with D-Bus
 
-        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "off"], timeout=2.0)
-        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "name", "OBDLink CX"], timeout=2.0)
-        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "le", "on"], timeout=2.0)
-        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "bredr", "off"], timeout=2.0)
-        self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "connectable", "on"], timeout=2.0)
-        rc, out = self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
+        await self._arun_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "off"], timeout=2.0)
+        await self._arun_cmd(["sudo", _BTMGMT, "-i", "hci0", "name", "OBDLink CX"], timeout=2.0)
+        await self._arun_cmd(["sudo", _BTMGMT, "-i", "hci0", "le", "on"], timeout=2.0)
+        await self._arun_cmd(["sudo", _BTMGMT, "-i", "hci0", "bredr", "off"], timeout=2.0)
+        await self._arun_cmd(["sudo", _BTMGMT, "-i", "hci0", "connectable", "on"], timeout=2.0)
+        rc, out = await self._arun_cmd(["sudo", _BTMGMT, "-i", "hci0", "power", "on"], timeout=2.0)
         print(f"[ABRP-BLE] btmgmt power on (rc={rc}): {out.strip()}")
 
     async def ensure_bt_ready(self, attempts: int = 5) -> bool:
@@ -466,7 +480,7 @@ class ABRPBLEServer:
         timeout on WCN3990), so qca_setup() returns 0, hci_dev_do_open() succeeds,
         and mgmt_index_added() fires making the device visible to btmgmt.
         """
-        if self._hci_up_running():
+        if await self._hci_up_running():
             await self._configure_bt()
             return True
 
@@ -475,7 +489,7 @@ class ABRPBLEServer:
         try:
             for i in range(1, attempts + 1):
                 print(f"[ABRP-BLE] BT recovery attempt {i}/{attempts}")
-                self._run_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
+                await self._arun_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
                 if self.attach_proc is not None:
                     try:
                         self.attach_proc.terminate()
@@ -485,8 +499,8 @@ class ABRPBLEServer:
                     self.attach_proc = None
                 await asyncio.sleep(1.0)
 
-                self._run_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
-                self._run_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
+                await self._arun_cmd(["sudo", "systemctl", "mask", "--runtime", "bluetooth"], timeout=3.0)
+                await self._arun_cmd(["sudo", "systemctl", "stop", "bluetooth"], timeout=3.0)
 
                 # Point firmware_class at /data/firmware where QCA blobs live.
                 # The kernel cmdline sets firmware_class.path=/data/firmware but init
@@ -495,7 +509,7 @@ class ABRPBLEServer:
                     with open("/sys/module/firmware_class/parameters/path", "wb") as _fp:
                         _fp.write(b"/data/firmware")
                 except OSError:
-                    self._run_cmd(
+                    await self._arun_cmd(
                         ["sudo", "sh", "-c",
                          "echo -n /data/firmware > /sys/module/firmware_class/parameters/path"],
                         timeout=2.0,
@@ -518,15 +532,15 @@ class ABRPBLEServer:
                 # so hci_register_dev fires within a few seconds of btattach start.
                 for _ in range(35):
                     await asyncio.sleep(1.0)
-                    if self._hci_up_running():
+                    if await self._hci_up_running():
                         break
 
-                if self._hci_up_running():
+                if await self._hci_up_running():
                     await self._configure_bt()
                     print("[ABRP-BLE] Bluetooth adapter is UP RUNNING")
                     return True
                 else:
-                    self._run_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
+                    await self._arun_cmd(["sudo", "pkill", "btattach"], timeout=1.0)
                     if self.attach_proc is not None:
                         try:
                             self.attach_proc.terminate()
@@ -626,7 +640,7 @@ class ABRPBLEServer:
             # bless registers the GATT advertisement instance but BlueZ sometimes
             # doesn't flip the mgmt-level 'advertising' flag. Force it on explicitly.
             await asyncio.sleep(0.5)
-            self._run_cmd(["sudo", _BTMGMT, "-i", "hci0", "advertising", "on"], timeout=2.0)
+            await self._arun_cmd(["sudo", _BTMGMT, "-i", "hci0", "advertising", "on"], timeout=2.0)
 
             self.running = True
             print("[ABRP-BLE] BLE server started, advertising as 'OBDLink CX'")
@@ -776,11 +790,11 @@ async def async_main():
             if not server.running and not server.recovering_bt:
                 await server.start()
             elif server.running and not server.recovering_bt:
-                if not server._hci_up_running():
+                if not await server._hci_up_running():
                     print("[ABRP-BLE] hci0 dropped, restarting BLE server")
                     await server.stop()
                     await server.start()
-                elif not server._is_advertising():
+                elif not await server._is_advertising():
                     print("[ABRP-BLE] advertising stopped, restarting BLE server")
                     await server.stop()
                     await server.start()
