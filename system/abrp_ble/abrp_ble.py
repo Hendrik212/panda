@@ -49,14 +49,10 @@ _DBUS_POLICY = """<!-- BlueZ D-Bus policy installed by abrp_ble for AGNOS 17+ co
 <busconfig>
   <policy user="root">
     <allow own="org.bluez"/>
-    <allow send_destination="org.bluez"/>
-    <allow send_interface="org.bluez.Agent1"/>
-    <allow send_interface="org.bluez.Profile1"/>
-    <allow send_interface="org.bluez.GattCharacteristic1"/>
-    <allow send_interface="org.bluez.GattDescriptor1"/>
-    <allow send_interface="org.bluez.LEAdvertisement1"/>
-    <allow send_interface="org.freedesktop.DBus.ObjectManager"/>
-    <allow send_interface="org.freedesktop.DBus.Properties"/>
+    <!-- Allow bluetoothd to send method calls to any connection (needed for GATT
+         RegisterApplication callbacks: BlueZ calls back to bless's D-Bus objects
+         to enumerate characteristics/descriptors and handle reads/writes) -->
+    <allow send_type="method_call"/>
   </policy>
   <policy context="default">
     <allow send_destination="org.bluez"/>
@@ -67,9 +63,14 @@ _DBUS_POLICY = """<!-- BlueZ D-Bus policy installed by abrp_ble for AGNOS 17+ co
 
 
 def _ensure_dbus_policy() -> None:
-    """Write bluetoothd D-Bus policy if missing (AGNOS 17+ has read-only rootfs)."""
+    """Write bluetoothd D-Bus policy if missing or outdated (AGNOS 17+ has read-only rootfs)."""
     if os.path.exists(_DBUS_POLICY_PATH):
-        return
+        try:
+            with open(_DBUS_POLICY_PATH) as f:
+                if f.read() == _DBUS_POLICY:
+                    return
+        except OSError:
+            pass
     try:
         # Remount root rw, write via sudo tee (comma user can't write to /etc directly)
         subprocess.run(["sudo", "mount", "-o", "remount,rw", "/"], check=True, timeout=5)
