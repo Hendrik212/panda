@@ -303,7 +303,7 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
         heartbeat_lost = false;
         heartbeat_disabled = false;
         heartbeat_engaged = (req->param1 == 1U);
-        heartbeat_engaged_mads = (req->param2 == 1U);
+        heartbeat_engaged_mads = true; // TODO-SP: revert to (req->param2 == 1U) once startup race is fixed
         break;
       }
     // **** 0xf6: set siren enabled
